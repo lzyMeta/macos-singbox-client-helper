@@ -1,0 +1,33 @@
+# 填好参数的配置——绝不提交
+config.json
+*.local.json
+sing-box-client-config.json
+
+# 配置备份
+*.bak
+*.bak.*
+
+# 运行产物
+cache.db
+ui/
+*.log
+*.err
+
+# 用户偏好
+prefs
+dns-backup
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*~
+
+# 本地文档，不进仓库
+PUSH.md
+docs/ssh-key-guide.md
+SSH-Key-*.md

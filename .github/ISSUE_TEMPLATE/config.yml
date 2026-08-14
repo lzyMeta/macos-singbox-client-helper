@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: sing-box 官方文档
+    url: https://sing-box.sagernet.org/configuration/
+    about: 配置字段的权威说明
+  - name: sing-box 仓库
+    url: https://github.com/SagerNet/sing-box
+    about: 内核本身的问题请到上游反馈
