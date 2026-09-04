@@ -18,8 +18,7 @@
           "commit": false
         }
       },
-      "maxCallsPerWindow": 15,
-      "keyFile": "~/.config/context7/sdlc-key"
+      "maxCallsPerWindow": 15
     }
   }
 }
