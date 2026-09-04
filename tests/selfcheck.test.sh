@@ -32,7 +32,7 @@ run() { out=$("$SELFCHECK" "$1" 2>&1); code=$?; }
 echo "验证 $SELFCHECK 的检查项是否真的在检查"
 
 # a) 检查器自身不得报工具用法错误
-for f in clean.sh bad-fullwidth.sh bad-array.sh; do
+for f in clean.sh bad-fullwidth.sh bad-array.sh bad-gnu.sh; do
   run "$FIX/$f"
   if printf '%s' "$out" | grep -qE 'invalid option|illegal option|usage: grep'; then
     ng "${f}：检查器自身报了工具用法错误" "$out"
@@ -63,6 +63,15 @@ if [ "$code" != 0 ] && printf '%s' "$out" | grep -q 'args\[@\]'; then
   ok "bad-array.sh：点名了裸 \"\${args[@]}\""
 else
   ng "bad-array.sh：期望点名裸 \"\${args[@]}\"（退出码 ${code}）" "$out"
+fi
+
+# c3) GNU 专有的 grep -P 必须被点名。历史上这条规则只列了 grep -oP，
+#     于是 singbox-selfcheck.sh 自己用的 grep -nP 从守卫旁边走了过去。
+run "$FIX/bad-gnu.sh"
+if [ "$code" != 0 ] && printf '%s' "$out" | grep -q 'grep -nP'; then
+  ok "bad-gnu.sh：点名了 grep -nP"
+else
+  ng "bad-gnu.sh：期望点名 grep -nP（退出码 ${code}）" "$out"
 fi
 
 echo

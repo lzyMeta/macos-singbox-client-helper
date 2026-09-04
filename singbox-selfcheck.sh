@@ -12,7 +12,7 @@ chk "mktemp 模板 XXXXXX 后带后缀（BSD 不支持）" \
 chk "数组在 set -u 下裸展开" \
     bash -c "grep -nE '(^|[^+])\"\\\$\\{[A-Za-z_]+\\[@\\]\\}\"' '$F' | grep -vE 'curl_opts|\\bopts\\b|sources|\\[@\\]\\+' || true"
 chk "GNU 专有命令（macOS 无）" \
-    bash -c "grep -nE 'sed -i |readlink -f|date -d |head -n -|grep -oP' '$F' || true"
+    bash -c "grep -nE 'sed -i |readlink -f|date -d |head -n -|grep -[a-zA-Z]*P' '$F' || true"
 chk "kill -9 / -KILL（会留下残留路由）" \
     bash -c "grep -n 'kill -9\|kill -KILL' '$F' | grep -v '^[0-9]*:[[:space:]]*#' | grep -v '别用\|不要\|不使用\|绝不' || true"
 chk "遗留的 launchctl load/unload" \
