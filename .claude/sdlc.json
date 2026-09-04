@@ -5,6 +5,19 @@
     "stopHook": "off"
   },
   "fix": {
-    "testGlobs": ["tests/**"]
+    "testGlobs": [
+      "tests/**"
+    ]
+  },
+  "docs": {
+    "context7": {
+      "libraries": {
+        "sing-box": {
+          "id": "/sagernet/sing-box",
+          "version": "1.13.14",
+          "commit": false
+        }
+      }
+    }
   }
 }
