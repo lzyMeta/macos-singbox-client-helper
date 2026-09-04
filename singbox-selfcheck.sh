@@ -6,11 +6,11 @@ chk() { printf '  %-46s ' "$1"; shift; if out=$("$@" 2>&1) && [ -z "$out" ]; the
 
 echo "静态自检：$F"
 chk "变量紧贴全角字符（bash 3.2 会解析错）" \
-    bash -c "grep -nP '\\\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F]' '$F' | grep -v ':[[:space:]]*#' || true"
+    bash -c "LC_ALL=C grep -nE '\\\$[A-Za-z_][A-Za-z0-9_]*[^[:print:][:space:]]' '$F' | grep -v ':[[:space:]]*#' || true"
 chk "mktemp 模板 XXXXXX 后带后缀（BSD 不支持）" \
     bash -c "grep -nE 'mktemp[^|]*XXXXXX\\.' '$F' || true"
 chk "数组在 set -u 下裸展开" \
-    bash -c "grep -nP '(?<!\\+)\"\\\$\\{[A-Za-z_]+\\[@\\]\\}\"' '$F' | grep -vE 'curl_opts|\\bopts\\b|sources|\\[@\\]\\+' || true"
+    bash -c "grep -nE '(^|[^+])\"\\\$\\{[A-Za-z_]+\\[@\\]\\}\"' '$F' | grep -vE 'curl_opts|\\bopts\\b|sources|\\[@\\]\\+' || true"
 chk "GNU 专有命令（macOS 无）" \
     bash -c "grep -nE 'sed -i |readlink -f|date -d |head -n -|grep -oP' '$F' || true"
 chk "kill -9 / -KILL（会留下残留路由）" \

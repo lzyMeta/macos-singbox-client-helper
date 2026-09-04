@@ -1,10 +1,10 @@
 {
   "version": 1,
   "check": {
-    "command": "./singbox-selfcheck.sh",
+    "command": "./singbox-selfcheck.sh && ./tests/selfcheck.test.sh",
     "stopHook": "off"
   },
   "fix": {
-    "testGlobs": ["singbox-selfcheck.sh"]
+    "testGlobs": ["tests/**"]
   }
 }
