@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./singbox-selfcheck.sh*)",
+      "Bash(bash -n *)",
+      "Bash(git --no-pager diff*)",
+      "Bash(git --no-pager log*)",
+      "Bash(git --no-pager show*)",
+      "Bash(sing-box check*)",
+      "Bash(sing-box format*)",
+      "Bash(sdlc-lock set *)",
+      "Bash(sdlc-lock status*)",
+      "Bash(sdlc-lock done*)",
+      "Bash(sdlc-check *)",
+      "Bash(sdlc-cfg *)",
+      "Bash(sdlc-handoff contract*)",
+      "Bash(sdlc-handoff prepare*)",
+      "Bash(sdlc-handoff verify*)"
+    ],
+    "deny": [
+      "Bash(./singbox.sh*)",
+      "Bash(git push --force*)",
+      "Bash(git push -f*)",
+      "Read(./config.json)",
+      "Read(./sing-box-client-config.json)",
+      "Read(./prefs)",
+      "Read(./dns-backup)",
+      "Read(/usr/local/etc/sing-box/**)",
+      "Edit(/usr/local/etc/sing-box/**)"
+    ]
+  }
+}

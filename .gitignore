@@ -31,3 +31,6 @@ Thumbs.db
 PUSH.md
 docs/ssh-key-guide.md
 SSH-Key-*.md
+
+# sdlc-kit 运行态目录
+.claude/.sdlc/
