@@ -1,7 +1,7 @@
 {
   "version": 1,
   "check": {
-    "command": "./singbox-selfcheck.sh && ./tests/selfcheck.test.sh",
+    "command": "./singbox-selfcheck.sh && ./tests/run.sh",
     "stopHook": "on-edit"
   },
   "fix": {

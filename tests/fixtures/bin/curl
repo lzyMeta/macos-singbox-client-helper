@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+#
+# 假 curl。要区分四类调用：查版本、探测 URL、下载内核、走 socks 代理试通。
+#
+# socks 那类按**代理端口**分流：现网配置的端口是 cmd_verify 第 1 步走的，
+# 沙箱那个探测到的闲置端口是阶段 1 走的。同一支 curl、同一个 socks5h://，
+# 只有端口能把它们分开。
+#
+#   SB_FAKE_LATEST=<版本>            releases/latest 报告的版本
+#   SB_FAKE_TARBALL=<路径>           下载内核时吐出的 tar.gz
+#   SB_FAKE_PROBE_FAIL=1             所有 URL 探测不通（模拟断网）
+#   SB_FAKE_SANDBOX_SOCKS_FAIL=1     阶段 1 沙箱建链失败
+#   SB_FAKE_VERIFY_FAIL=all|first    cmd_verify 第 1 步失败（first 只败第一轮）
+#
+S="${SB_FAKE_STATE:?SB_FAKE_STATE 未设置}"
+
+out="" proxy="" url="" head_only=0 want_version=0 http3=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="${2:-}"; shift 2 ;;
+    -x) proxy="${2:-}"; shift 2 ;;
+    -V|--version) want_version=1; shift ;;
+    --http3) http3=1; shift ;;
+    -w|--connect-timeout|--max-time|--speed-time|--speed-limit|--retry) shift 2 ;;
+    http*|-*) case "$1" in
+                http*) url="$1" ;;
+                *) case "$1" in *I*) head_only=1 ;; esac ;;
+              esac; shift ;;
+    *) shift ;;
+  esac
+done
+
+# curl -V / curl --http3 -V：让 verify 第 4 步判定为「本机 curl 不支持 http3」
+if [ "$want_version" = 1 ]; then
+  [ "$http3" = 1 ] && exit 1
+  echo "curl 8.7.1 (x86_64-apple-darwin)"
+  echo "Features: alt-svc AsynchDNS HSTS IPv6 Largefile libz NTLM SSL threadsafe UnixSockets"
+  exit 0
+fi
+
+[ "${SB_FAKE_PROBE_FAIL:-}" = 1 ] && exit 7
+[ "$head_only" = 1 ] && exit 0
+
+_emit() { if [ -n "$out" ]; then printf '%s' "$1" > "$out"; else printf '%s' "$1"; fi; }
+
+# 走代理的请求
+if [ -n "$proxy" ]; then
+  port="${proxy##*:}"
+  if [ "$port" = "${SB_FAKE_LIVE_PORT:-}" ]; then
+    # cmd_verify 第 1 步。轮次计数用来实现「第一轮败、第二轮过」。
+    n=$(( $(cat "$S/verify_calls" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$S/verify_calls"
+    case "${SB_FAKE_VERIFY_FAIL:-}" in
+      all)   exit 7 ;;
+      first) [ "$n" = 1 ] && exit 7 ;;
+    esac
+    _emit "1.2.3.4"; exit 0
+  fi
+  # 阶段 1 的沙箱探测
+  [ "${SB_FAKE_SANDBOX_SOCKS_FAIL:-}" = 1 ] && exit 7
+  _emit "1.2.3.4"; exit 0
+fi
+
+case "$url" in
+  *api.github.com/repos/SagerNet/sing-box/releases/latest*)
+    _emit "{\"tag_name\": \"v${SB_FAKE_LATEST:-1.14.0}\", \"name\": \"${SB_FAKE_LATEST:-1.14.0}\"}" ;;
+  *.tar.gz)
+    [ -n "${SB_FAKE_TARBALL:-}" ] && [ -f "$SB_FAKE_TARBALL" ] || exit 22
+    [ -n "$out" ] || exit 22
+    cp "$SB_FAKE_TARBALL" "$out" ;;
+  *api.ipify.org*)   _emit "5.6.7.8" ;;
+  *ipinfo.io*)       _emit '{"ip":"1.2.3.4","org":"AS12345 Residential Broadband"}' ;;
+  *cloudflare-quic*) _emit "2" ;;
+  *cip.cc*)          _emit "IP  : 5.6.7.8
+地址 : 中国  上海
+运营商 : 电信" ;;
+  *) _emit "" ;;
+esac
+exit 0

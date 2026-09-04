@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# 假 netstat。SB_FAKE_NO_TUN=1 时去掉 utun 那几条，用来测「TUN 路由不见了」。
+echo "Routing tables"
+echo
+echo "Internet:"
+echo "Destination        Gateway            Flags        Netif Expire"
+echo "default            192.168.1.1        UGScg          en0"
+if [ "${SB_FAKE_NO_TUN:-}" != 1 ]; then
+  echo "default            link#22            UCSIg         utun4"
+  echo "0/1                link#22            UCSIg         utun4"
+  echo "128.0/1            link#22            UCSIg         utun4"
+fi
+echo "127                127.0.0.1          UCS            lo0"
+exit 0

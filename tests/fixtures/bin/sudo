@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# 假 sudo：测试全程不提权，直接透传。
+# need_root() 会先探 `sudo -n true`，长任务里还会 `sudo -v` 续凭据——两者都要认。
+case "${1:-}" in
+  -n) shift; [ "${1:-}" = true ] && exit 0; exec "$@" ;;
+  -v) exit 0 ;;
+esac
+exec "$@"

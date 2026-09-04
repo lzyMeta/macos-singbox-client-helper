@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# 假 ifconfig。只有 fe80:: 与 ::1，让 verify 第 4 步判定为「无全局 IPv6」。
+if [ $# -gt 0 ]; then
+  case "$1" in
+    utun*) [ "${SB_FAKE_NO_TUN:-}" = 1 ] && exit 1
+           echo "$1: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 9000"; exit 0 ;;
+    *)     echo "$1: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500"; exit 0 ;;
+  esac
+fi
+echo "lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384"
+echo "	inet6 ::1 prefixlen 128"
+echo "en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500"
+echo "	inet6 fe80::1%en0 prefixlen 64 scopeid 0x4"
+echo "	inet 192.168.1.20 netmask 0xffffff00 broadcast 192.168.1.255"
+[ "${SB_FAKE_NO_TUN:-}" != 1 ] && echo "utun4: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 9000"
+exit 0

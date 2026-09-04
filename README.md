@@ -133,7 +133,7 @@ echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 
 ## 3. 管理脚本 `singbox.sh`
 
-覆盖安装、配置、验证、运行、排查、升级、卸载的全生命周期，21 个子命令。
+覆盖安装、配置、验证、运行、排查、升级、卸载的全生命周期，22 个子命令。
 
 | 分类 | 命令 |
 |---|---|
@@ -141,7 +141,7 @@ echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 | 运行 | `status` `start` `stop` `restart` `enable` `disable` `logs` |
 | 检查 | `verify` `syscheck` `rules` `debug` `doctor` |
 | 配置 | `edit` `config` `dns` |
-| 维护 | `update` `mirror` `uninstall` |
+| 维护 | `update` `rollback` `mirror` `uninstall` |
 
 几个值得单独知道的：
 
@@ -158,10 +158,11 @@ echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 - **绝不 `kill -9`**：强杀会留下残留路由，症状是断网且看不出原因。
 - **用 `bootstrap` / `bootout` 而非 `load` / `unload`**：后者报错含糊，`Load failed: 5: Input/output error` 几乎不给线索。
 - **改配置前一定备份**，带时间戳，自动保留最近 10 份。
-- **升级失败自动回滚**：新内核先校验配置，不过就换回旧的。
+- **升级分四个阶段，每个阶段都能退回已知可用的状态**：阶段 1 把新内核装到临时前缀、用一份去掉 `tun`、改了端口的**派生配置**实跑并实测建链——现网服务全程不受影响；到阶段 2 才动 `/usr/local/bin/sing-box`，起不来就回滚；阶段 3 跑一遍 `verify` 五步验收。
+- **`rollback` 是随时能按的按钮**：升级成功后旧内核保留在 `sing-box.prev`，当时一切正常、半小时后才发现某个网站进不去，一条命令换回去。只保留一份，只能退一步。
 - **只读命令不要 sudo**：`verify`、`syscheck`、`rules` 全程无需管理员权限。
 
-改动脚本后可跑 `./singbox-selfcheck.sh singbox.sh` 做静态自检，它覆盖了几类 macOS 特有的坑（bash 3.2 的变量解析、BSD `mktemp` 的模板限制、`set -u` 下的空数组展开等）。
+改动脚本后跑 `./singbox-selfcheck.sh && ./tests/run.sh`。前半段是静态自检，覆盖几类 macOS 特有的坑（bash 3.2 的变量解析、BSD `mktemp` 的模板限制、`set -u` 下的空数组展开等）；后半段是 `tests/`，用 PATH 前置的桩把 `update` / `rollback` 的状态机整个跑一遍——离线、不要 sudo、不碰真实系统。
 
 ---
 
@@ -198,6 +199,11 @@ echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 ├── LICENSE                    许可（个人使用）
 ├── singbox.sh                 管理脚本
 ├── singbox-selfcheck.sh       脚本静态自检
+├── tests/
+│   ├── run.sh                 跑 tests/ 下所有 *.test.sh
+│   ├── selfcheck.test.sh      验证自检项真的在检查
+│   ├── update.test.sh         update / rollback 的状态机断言
+│   └── fixtures/              样本脚本与 PATH 桩（假 sudo / curl / launchctl 等）
 ├── config/
 │   └── config.example.json    配置模板（占位符）
 └── docs/

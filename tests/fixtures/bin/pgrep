@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# 假 pgrep。running() 只问一句 `pgrep -x sing-box`，答案由 launchctl 桩写的状态位给。
+S="${SB_FAKE_STATE:?SB_FAKE_STATE 未设置}"
+case "$*" in
+  *sing-box*)
+    if [ "$(cat "$S/running" 2>/dev/null)" = 1 ]; then echo 4242; exit 0; fi
+    exit 1 ;;
+esac
+exit 1

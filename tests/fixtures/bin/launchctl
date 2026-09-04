@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+#
+# 假 launchctl。服务起不起得来，由**此刻装在现网位的那个二进制的版本**决定——
+# 这正是「阶段 2 换了新内核之后起不来」那条分支要走的路径。
+#
+#   SB_FAKE_START_FAIL=<版本>   该版本装上去之后服务不出现
+#   SB_FAKE_DAEMON_LOADED=0     模拟 daemon 未加载
+#
+S="${SB_FAKE_STATE:?SB_FAKE_STATE 未设置}"
+
+_live_version() { "${SB_FAKE_LIVE_BIN:-/nonexistent}" version 2>/dev/null | head -1 | awk '{print $3}'; }
+
+_start() {
+  if [ "$(_live_version)" = "${SB_FAKE_START_FAIL:-}" ]; then
+    echo 0 > "$S/running"           # kickstart 本身成功，进程没留住
+    return 0
+  fi
+  echo 1 > "$S/running"
+  # 真的占住现网端口：_sb_health 的「监听端口在听」是 bind 探测，不占就测不到东西
+  if [ -n "${SB_FAKE_LIVE_PORT:-}" ] && [ ! -s "$S/listener.pid" ]; then
+    python3 -c 'import socket,sys,time
+s=socket.socket(); s.bind(("127.0.0.1",int(sys.argv[1]))); s.listen(16); time.sleep(600)' \
+      "$SB_FAKE_LIVE_PORT" >/dev/null 2>&1 &
+    echo $! > "$S/listener.pid"
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      python3 -c 'import socket,sys
+s=socket.socket()
+sys.exit(0 if s.connect_ex(("127.0.0.1",int(sys.argv[1])))==0 else 1)' "$SB_FAKE_LIVE_PORT" && break
+      /bin/sleep 0.1
+    done
+  fi
+  return 0
+}
+
+_stop() {
+  echo 0 > "$S/running"
+  [ -s "$S/listener.pid" ] && kill "$(cat "$S/listener.pid")" 2>/dev/null
+  : > "$S/listener.pid"
+  return 0
+}
+
+case "${1:-}" in
+  print)      [ "${SB_FAKE_DAEMON_LOADED:-1}" = 0 ] && exit 1; exit 0 ;;
+  kickstart)  _start ;;
+  bootstrap)  _start ;;
+  bootout)    _stop ;;
+  enable|disable) exit 0 ;;
+  *) exit 0 ;;
+esac

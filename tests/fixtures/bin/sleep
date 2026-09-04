@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# 假 sleep：把测试里的等待压掉。
+#
+# ⚠️ 不能无条件立即返回。need_root() 会起一个后台保活循环
+#   ( while kill -0 $$; do sudo -n true; sleep 50; done ) &
+# 那条 50s 若变成立即返回，整个测试期间就是一个吃满 CPU 的忙循环。
+# 所以按时长分流：≥30s 视为保活一类的长等待，走真 sleep；短的（restart 的 3s、
+# 阶段 3 重试的 5s）才压掉。
+d="${1:-0}"
+case "$d" in
+  *[!0-9.]*|'') exec /bin/sleep "$@" ;;
+esac
+if [ "${d%%.*}" -ge 30 ] 2>/dev/null; then exec /bin/sleep "$@"; fi
+# 不是 0：沙箱要等新内核把端口占上，压到 0 会把等待变成空转竞速。
+exec /bin/sleep 0.05

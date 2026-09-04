@@ -153,4 +153,44 @@ fixture」，这条对 `tests/` 同样适用，不必再改。
 
 ## 实现计划
 
-（留空，由 `/sdlc-kit:build` 追加）
+### 待定问题的落地结论
+
+| 问题 | 结论 | 依据 |
+|---|---|---|
+| release 有没有 checksum | **没有**。降级为「解压后 `version` 能跑 + `Environment:` 行的 `darwin/<arch>` 匹配」，并在输出里明说未做 sha256 | 实测 v1.14.0 的资产列表，无 `checksums.txt` / `.sha256` / `SHA256SUMS` |
+| 沙箱闲置端口 | `python3` 从 `10900` 起 bind 探测，最多试 200 个 | `python3` 已是硬依赖，比 `lsof` 准且不要 sudo |
+| 阶段 3 重试 | `VERIFY_RETRY_WAIT=5`，重试 1 轮 | spec 暂定值，照用 |
+
+### 顺带修掉的两处（spec 没写，但不修就落不了地）
+
+1. **`ask "升级到 X？"` 的默认值 `n` → `y`。** 原样下 `singbox -y update` 取默认 `n`，**永远不升级**（帮助文本里还把它当示例）。更要命的是外层闸门恒为 `n` 时，阶段 0 那道跨 minor 确认就是死代码。改成主确认默认 `y`、跨 minor 确认默认 `n`，两道闸门才各司其职。
+2. **`cmd_verify` 的退出码。** 原样下只有第 1 步会 `return 1`，第 2/3/4/5 步打了 `✗` 照样返回 0——阶段 3 拿它当回滚判据，会把坏掉的升级判成成功。加 `VERIFY_BAD` 计数与 `vbad()`，末尾按计数返回。判据是 **`bad`（`✗`）算硬失败、`warn`（`!`）算软告警**，正好对上 spec 说的「一次抖动不该回滚」。
+   ⚠️ 按这个判据**第 5 步没有硬失败分支**（`cip.cc` 取不到是 `info`、网关不可达是 `warn`）。没有为了凑「五步」把它们升级成 `bad`——那会让局域网网关偶发丢包直接回滚一次成功的升级。这是对 spec「五步全部算硬失败」的收窄解读。
+
+### 落地的结构
+
+`singbox.sh` 新增 helper：`_sb_free_port` / `_sb_port_listening` / `_sb_derive_config` / `_sb_stage_prefix` / `_sb_probe_socks` / `_sb_health` / `_sb_warn_deprecated` / `_sb_verify_rounds` / `_sb_rollback_to_prev`；`cmd_update` 重写为四阶段；新增 `cmd_rollback`；调度器与两处帮助文本跟上。
+
+测试脚手架：`tests/run.sh`、`tests/update.test.sh`（10 条状态机断言）、`tests/fixtures/bin/`（`sudo` `curl` `launchctl` `pgrep` `netstat` `ifconfig` `dig` `ping` `sleep` 九个 PATH 桩）、`tests/fixtures/fake-sing-box`（假内核模板，版本号 `sed` 进去）。
+
+三处值得记下的桩设计：
+
+- **假内核按「装在哪」决定行为**（`$0` 是否等于 `$SB_FAKE_LIVE_BIN`）。阶段 1 与阶段 2 跑的是同一个二进制、同一份配置，只有位置不同——要让这两处能分别失败，判据只能是位置。
+- **`sleep` 桩不能无条件立即返回。** `need_root` 会起一个 `while …; do sudo -n true; sleep 50; done &` 的保活循环，压到 0 就是个吃满 CPU 的忙循环。按时长分流：≥30s 走真 `sleep`，短的压到 0.05s。
+- **`launchctl` 桩真的占住现网端口**，`_sb_health` 的「端口在听」才有东西可测；服务起不起得来由**此刻装在现网位的那个二进制的版本**决定，这正是「阶段 2 换了新内核之后起不来」要走的路径。
+
+### 实现过程中发现的一个真 bug（不在 spec 里）
+
+`_sb_health` 第一版写的是 `netstat -rn -f inet | grep -q utun`。`grep -q` 一命中就退出，`netstat` 吃 SIGPIPE 死掉，`set -o pipefail` 把那个 141 当成整条管道的退出码——**「路由在」被判成「路由没了」，于是回滚一次本来成功的升级**。撞不撞得上取决于调度时机，是偶发的；真机上的路由表比测试桩长得多，只会更容易撞上。改成先落变量再 `case` 匹配（跟 `cmd_status:940` 一个写法）。
+
+这条是测试抓出来的：同一次运行里，阶段 2 报「没有 utun」、几秒后的回滚报「TUN 路由存在」。
+
+### 验证
+
+`./singbox-selfcheck.sh && ./tests/run.sh`，已进 `.claude/sdlc.json` 的 `check.command`。
+
+先写断言跑出红（**通过 2 / 失败 8**，红的内容点名 `升级到 1.13.19？ → 取默认（n）`，即上面第 1 条），再写实现跑出绿（**通过 18 / 失败 0**，退出码 0）。因为修掉的是时序相关的偶发 bug，绿连跑了 3 次确认稳定。
+
+⚠️ 红的那一轮里 `rollback 无 .prev` 是**假绿**——「未知命令」同样非 0 退出且不动文件。已收紧为「必须点名 `.prev` 且不得出现『未知命令』」。
+
+**不可机械化的部分仍未做**（需要真机、会动 launchctl 与路由表）：spec「验证」一节的 4 条手工项，等真升级 1.14.0 时走一遍。

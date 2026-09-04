@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+#
+# 假 sing-box 内核。不是 PATH 桩——singbox.sh 从来不按名字找 sing-box，
+# 它调的永远是 "$BIN" 或沙箱位上的绝对路径。所以这份是**模板**，测试用
+# sed 把 __VERSION__ 换成具体版本号后装到那两个位置上去。
+#
+# 「装在哪」决定行为：$0 等于 $SB_FAKE_LIVE_BIN 就是现网位，否则是沙箱位。
+# 阶段 1 与阶段 2 跑的是同一个二进制、同一份配置，只有位置不同——要让这两处
+# 能分别失败，判据只能是位置。
+#
+# 驱动变量（都可不设）：
+#   SB_FAKE_CHECK_FAIL=<sandbox|live|all>:<版本>   check -c 失败
+#   SB_FAKE_RUN_FAIL=<版本>                        run 起不来（沙箱实跑）
+#   SB_FAKE_DEPRECATED=<版本>                      check 输出里带废弃字段告警
+#   SB_FAKE_ARCH=<amd64|arm64>                     version 里报告的架构
+#
+SB_SELF_VERSION="__VERSION__"
+
+_pos() { [ "$0" = "${SB_FAKE_LIVE_BIN:-}" ] && echo live || echo sandbox; }
+
+# "<位置>:<版本>" 是否命中当前这次调用
+_hits() {
+  local spec="$1" want_pos="${1%%:*}" want_ver="${1##*:}"
+  [ -z "$spec" ] && return 1
+  [ "$want_ver" = "$SB_SELF_VERSION" ] || return 1
+  [ "$want_pos" = all ] || [ "$want_pos" = "$(_pos)" ]
+}
+
+case "${1:-}" in
+  version)
+    echo "sing-box version $SB_SELF_VERSION"
+    echo
+    echo "Environment: go1.26.5 darwin/${SB_FAKE_ARCH:-$( [ "$(uname -m)" = arm64 ] && echo arm64 || echo amd64 )}"
+    echo "Tags: with_gvisor,with_quic"
+    echo "CGO: enabled"
+    exit 0
+    ;;
+  check)
+    [ "${SB_FAKE_DEPRECATED:-}" = "$SB_SELF_VERSION" ] && \
+      echo "WARN[0000] deprecated: option domain_strategy is deprecated in sing-box 1.14.0"
+    if _hits "${SB_FAKE_CHECK_FAIL:-}"; then
+      echo "FATAL[0000] decode config at ${3:-?}: unknown field domain_strategy" >&2
+      exit 1
+    fi
+    exit 0
+    ;;
+  run)
+    [ "${SB_FAKE_RUN_FAIL:-}" = "$SB_SELF_VERSION" ] && {
+      echo "FATAL[0000] start service: bind: address already in use" >&2; exit 1; }
+    # 真的把配置里的 mixed 端口占住：沙箱探测要先等端口起来，
+    # 不占的话那段等待就是在等一个永远不会发生的事件。
+    cfg=""
+    while [ $# -gt 0 ]; do case "$1" in -c) cfg="${2:-}"; shift 2 ;; *) shift ;; esac; done
+    exec python3 - "$cfg" <<'PY'
+import json, socket, sys, time
+port = 0
+try:
+    d = json.load(open(sys.argv[1]))
+    for i in d.get("inbounds", []):
+        if i.get("type") in ("mixed", "socks"):
+            port = int(i.get("listen_port", 0)); break
+except Exception:
+    pass
+if port:
+    s = socket.socket(); s.bind(("127.0.0.1", port)); s.listen(16)
+time.sleep(600)
+PY
+    ;;
+esac
+echo "fake sing-box: 未实现的子命令 ${1:-}" >&2
+exit 2

@@ -16,7 +16,8 @@
 #   edit       改配置（校验 + 备份 + 重启）
 #   config     配置子命令：show / backup / restore / diff
 #   rules      验证规则集 URL
-#   update     升级内核（失败回滚）
+#   update     升级内核（沙箱验证 → 升级 → 验收，任一步失败自动回滚）
+#   rollback   换回上一个内核（$BIN.prev）并重新验收
 #   doctor     一键诊断
 #   uninstall  卸载
 #
@@ -58,6 +59,7 @@ GH_RELEASES=https://github.com/SagerNet/sing-box/releases/latest
 DEFAULT_MIRRORS="https://ghfast.top https://gh-proxy.com https://ghproxy.net https://mirror.ghproxy.com"
 NET_TIMEOUT=25
 CONNECT_TIMEOUT=4      # 建连超时：镜像死了要快速失败，不要干等
+VERIFY_RETRY_WAIT=5    # 阶段 3 验收失败后隔多久重试那一轮
 PROBE_TIMEOUT=6        # 探测单个镜像的总时限
 STALL_SECS=20          # 下载速度低于阈值持续这么久就放弃，换下一个
 STALL_BYTES=2048
@@ -87,6 +89,12 @@ step() { [ "$QUIET" = 1 ] || printf '\n%s==> %s%s\n' "$C_B" "$*" "$C_N"; }
 warn() { printf '%s  ! %s%s\n' "$C_WARN" "$*" "$C_N" >&2; }
 bad()  { printf '%s  ✗ %s%s\n' "$C_ERR" "$*" "$C_N" >&2; }
 die()  { bad "$*"; exit 1; }
+
+# 验收失败计数。cmd_verify 里凡是打 ✗ 的分支都要走 vbad——否则那些失败会被
+# 函数末尾那条语句的退出码盖掉，调用方（阶段 3 的回滚判定）看到的永远是 0。
+# warn 不计数：ipinfo.io 取不到、curl 不支持 http3 这类是软告警，抖一下不该回滚。
+VERIFY_BAD=0
+vbad() { VERIFY_BAD=$((VERIFY_BAD + 1)); bad "$*"; }
 
 #=======================================================================
 # 基础设施：清理、锁、sudo、交互
@@ -995,6 +1003,7 @@ cmd_syscheck() {
 #=======================================================================
 cmd_verify() {
   require_installed
+  VERIFY_BAD=0
   running || { bad "服务未运行 —— 先 $(basename "$0") start"; return 1; }
   local s; s=$(sock_addr)
 
@@ -1022,11 +1031,11 @@ except Exception: print("")' 2>/dev/null)
   info "兜底出站   ：${ip_main:-取不到}        （应为 vpstrans 机房 IP）"
   info "社交组出站 ：${ip_soc:-取不到}  ${org}  （应为 vpsre 住宅 IP）"
   if [ -z "$ip_main" ]; then
-    bad "兜底取不到 IP —— 跑 status 看 TUN 是否接管"
+    vbad "兜底取不到 IP —— 跑 status 看 TUN 是否接管"
   elif [ -z "$ip_soc" ]; then
     warn "ipinfo.io 取不到，跳过分流判断"
   elif [ "$ip_main" = "$ip_soc" ]; then
-    bad "两个出口相同 —— 服务端按 UUID 分流未生效，或 vpsre 中转链路断了"
+    vbad "两个出口相同 —— 服务端按 UUID 分流未生效，或 vpsre 中转链路断了"
     info "这是服务端问题，客户端配置改不了"
     dim "也可能是 ipinfo.io 没命中社交规则集；用 debug 确认它走的是哪个出站"
   else
@@ -1039,7 +1048,7 @@ except Exception: print("")' 2>/dev/null)
     local g; g=$(dig +short +time=3 +tries=1 www.google.com 2>/dev/null | grep -E '^[0-9]' | head -3 | tr '\n' ' ')
     info "google.com → ${g:-无结果}"
     case "$g" in
-      157.240.*|31.13.*|"") bad "解析结果异常（疑似污染）—— 跑 syscheck 看系统 DNS 是不是内网地址" ;;
+      157.240.*|31.13.*|"") vbad "解析结果异常（疑似污染）—— 跑 syscheck 看系统 DNS 是不是内网地址" ;;
       *) ok "解析正常" ;;
     esac
   else
@@ -1049,7 +1058,7 @@ except Exception: print("")' 2>/dev/null)
 
   step "4/5  IPv6 与 QUIC"
   local v6; v6=$(ifconfig 2>/dev/null | grep inet6 | grep -v 'fe80::' | grep -v '::1 ')
-  [ -z "$v6" ] && ok "无全局 IPv6" || bad "存在全局 IPv6 —— 跑 syscheck"
+  [ -z "$v6" ] && ok "无全局 IPv6" || vbad "存在全局 IPv6 —— 跑 syscheck"
   if curl --http3 -V >/dev/null 2>&1 || curl -V 2>/dev/null | grep -q HTTP3; then
     local hv; hv=$(curl -s --max-time 8 -o /dev/null -w '%{http_version}' --http3 https://cloudflare-quic.com/ 2>/dev/null)
     [ "$hv" = "3" ] && warn "HTTP/3 仍可用 —— 检查禁 QUIC 规则（udp + 443 + reject）" || ok "QUIC 已阻断"
@@ -1065,6 +1074,10 @@ except Exception: print("")' 2>/dev/null)
     ping -c1 -W1500 "$gw" >/dev/null 2>&1 && ok "局域网网关 $gw 可达" \
       || warn "网关不可达 —— 检查私有网段规则是否排在最前"
   fi
+
+  # 退出码要如实反映五步的结果。原先只有第 1 步会 return 1，后面几步打了 ✗
+  # 也照样返回 0——升级的验收阶段拿这个当判据，就会把坏掉的升级判成成功。
+  [ "$VERIFY_BAD" = 0 ]
 }
 
 #=======================================================================
@@ -1404,20 +1417,193 @@ cmd_logs() {
 }
 
 #=======================================================================
-# update
+# update / rollback
 #=======================================================================
+# 升级的形状是「四个阶段，每个阶段都能回到一个已知可用的状态」：
+#   0 预检   不下载。跨 minor 要额外点头——1.11 换过 DNS 格式、1.14 移除了
+#            domain_strategy，这类升级不该被 -y 一路放过
+#   1 沙箱   装到临时前缀，用新内核跑一份派生配置实测建链。现网服务毫发无损
+#   2 升级   此时才动 $BIN。起不来就回滚
+#   3 验收   cmd_verify 五步，失败重试一轮再判回滚
+#
+# 上游 release 的资产列表里没有 checksum 文件（没有 checksums.txt / .sha256 /
+# SHA256SUMS），所以完整性只能降级验到「解压出来能跑、且自报架构与本机一致」。
+# 这一点会在输出里说明，不装作做过。
+
+# 找一个没人用的本地端口。lsof 要 sudo 又慢，直接 bind 试最准。
+_sb_free_port() {
+  python3 - "${1:-10900}" <<'PY'
+import socket, sys
+start = int(sys.argv[1])
+for p in range(start, start + 200):
+    s = socket.socket()
+    try:
+        s.bind(("127.0.0.1", p))
+    except OSError:
+        continue
+    finally:
+        s.close()
+    print(p)
+    break
+else:
+    print("")
+PY
+}
+
+_sb_port_listening() {
+  python3 - "$1" <<'PY'
+import socket, sys
+s = socket.socket(); s.settimeout(1)
+sys.exit(0 if s.connect_ex(("127.0.0.1", int(sys.argv[1]))) == 0 else 1)
+PY
+}
+
+# 从现网配置派生一份能在沙箱里跑的：现网服务还在跑的时候，第二个实例会在
+# tun 设备、mixed 端口、cache_file 三处全部撞车。
+#   $1 源配置  $2 目标路径  $3 沙箱端口  $4 沙箱工作目录
+# 用 python3 不用 jq：本脚本对 jq 零依赖，而 python3 已经在 check_deps 的必需
+# 命令清单里。为了这一处引入新依赖不值当。
+_sb_derive_config() {
+  python3 - "$1" "$2" "$3" "$4" <<'PY'
+import json, sys
+src, dst, port, workdir = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
+d = json.load(open(src))
+d["inbounds"] = [i for i in d.get("inbounds", []) if i.get("type") != "tun"]
+for i in d["inbounds"]:
+    if i.get("type") in ("mixed", "socks"):
+        i["listen"] = "127.0.0.1"
+        i["listen_port"] = port
+        break
+else:
+    d["inbounds"].append({"type": "mixed", "tag": "sandbox-in",
+                          "listen": "127.0.0.1", "listen_port": port})
+exp = d.get("experimental")
+if isinstance(exp, dict) and isinstance(exp.get("cache_file"), dict):
+    exp["cache_file"]["path"] = workdir + "/cache.db"
+json.dump(d, open(dst, "w"), ensure_ascii=False, indent=2)
+PY
+}
+
+# 把新内核装到临时前缀上（沙箱位），回声出装好的路径。
+_sb_stage_prefix() {
+  local newbin="$1" wd="$2"
+  mkdir -p "$wd/bin" || return 1
+  install -m 755 "$newbin" "$wd/bin/sing-box" || return 1
+  xattr -d com.apple.quarantine "$wd/bin/sing-box" 2>/dev/null || true
+  printf '%s' "$wd/bin/sing-box"
+}
+
+# 用给定内核跑一份配置，等端口起来，再从 socks 出口实测建链。
+#   $1 内核路径  $2 配置路径  $3 端口  $4 工作目录
+# 先等端口再 curl：起不来和起来了但代理不通是两种毛病，混在一起就没法判断。
+_sb_probe_socks() {
+  local bin="$1" cfg="$2" port="$3" wd="$4" pid=0 up=1 rc=1 i ip
+  "$bin" run -c "$cfg" -D "$wd" >"$wd/run.log" 2>&1 &
+  pid=$!
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    kill -0 "$pid" 2>/dev/null || break        # 进程已经死了，别再干等
+    if _sb_port_listening "$port"; then up=0; break; fi
+    sleep 1
+  done
+  if [ "$up" != 0 ]; then
+    bad "沙箱实例没能起来（端口 ${port} 始终没有监听）"
+    sed 's/^/      /' "$wd/run.log" >&2
+  else
+    ip=$(curl -s --max-time 15 -x "socks5h://127.0.0.1:${port}" https://api.ipify.org 2>/dev/null)
+    if [ -n "$ip" ]; then ok "沙箱建链成功，出口 ${ip}"; rc=0
+    else bad "沙箱建链失败：新内核跑起来了，但代理不通"; fi
+  fi
+  kill "$pid" 2>/dev/null
+  wait "$pid" 2>/dev/null
+  return $rc
+}
+
+# 升级后要确认的三件确定性的事：进程活着、TUN 路由在、监听端口在听。
+# 三样都不依赖外网，是「起来了没有」最硬的判据——阶段 3 那些依赖公网的检查
+# 会抖，这一层不会。
+_sb_health() {
+  local n=0 port routes
+  running && ok "进程存活" || { bad "进程未出现"; n=$((n + 1)); }
+  # ⚠️ 别写成 `netstat … | grep -q utun`：grep -q 一命中就退出，netstat 吃 SIGPIPE
+  # 死掉，pipefail 把那个 141 当成整条管道的退出码——「路由在」于是被判成「路由没了」，
+  # 而且撞不撞得上取决于调度时机，是偶发的。先落变量再匹配，跟 cmd_status 一个写法。
+  routes=$(netstat -rn -f inet 2>/dev/null)
+  case "$routes" in
+    *utun*) ok "TUN 路由存在" ;;
+    *)      bad "路由表里没有 utun —— TUN 未接管"; n=$((n + 1)) ;;
+  esac
+  port=$(sock_addr); port="${port##*:}"
+  if _sb_port_listening "$port"; then
+    ok "监听端口 ${port} 在听"
+  else
+    bad "监听端口 ${port} 没有在听"; n=$((n + 1))
+  fi
+  [ "$n" = 0 ]
+}
+
+# 废弃字段照打照记，但一个字都不自动改——改写配置需要读 release notes 与
+# 上游文档，验收标准和「安全升级」完全不是一回事。
+_sb_warn_deprecated() {
+  grep -qi deprecated "$1" || return 0
+  warn "存在废弃字段告警（本脚本不会自动改写配置）："
+  grep -i deprecated "$1" | sed 's/^/        /' >&2
+}
+
+# 阶段 3 的验收：cmd_verify 五步，任一步打 ✗ 都算硬失败。失败则隔几秒再来一轮——
+# 第 2/3/4/5 步依赖 ipinfo.io / dig / cloudflare-quic.com / cip.cc，一次网络抖动
+# 不该把一次本来成功的升级回滚掉。
+_sb_verify_rounds() {
+  local i
+  for i in 1 2; do
+    if [ "$i" = 2 ]; then
+      warn "第 1 轮验收未通过，${VERIFY_RETRY_WAIT}s 后重试一轮"
+      sleep "$VERIFY_RETRY_WAIT"
+    fi
+    info "验收第 ${i}/2 轮"
+    cmd_verify && return 0
+  done
+  return 1
+}
+
+# 换回 $BIN.prev 并重启。$1 是期望回到的版本号，只用于输出。
+_sb_rollback_to_prev() {
+  local want="${1:-}"
+  step "回滚"
+  [ -f "$BIN.prev" ] || { bad "没有 ${BIN}.prev，无法回滚 —— 需要手工重装内核"; return 1; }
+  sudo mv "$BIN.prev" "$BIN" || { bad "回滚失败：换不回 ${BIN}"; return 1; }
+  ok "已换回 ${want:-旧版本}"
+  cmd_restart || { bad "回滚后重启失败 —— 跑 $(basename "$0") doctor"; return 1; }
+  _sb_health || warn "回滚后健康检查未全过 —— 跑 $(basename "$0") doctor"
+  return 0
+}
+
 cmd_update() {
   require_installed; need_root; acquire_lock
-  step "升级内核"
+
+  #--- 阶段 0：预检（不下载）--------------------------------------------
+  step "阶段 0/3　预检"
   local cur new arch
   cur=$("$BIN" version 2>/dev/null | head -1 | awk '{print $3}')
   info "当前：${cur:-未知}"
   new=$(latest_version) || die "无法获取最新版本（GitHub 与所有镜像均不可达）；可用 install --version 手动指定"
   info "最新：$new"
   [ "$cur" = "$new" ] && { ok "已是最新"; return 0; }
-  ask "升级到 ${new}？" n || return 0
+  ask "升级到 ${new}？" y || return 0
+
+  # 跨 minor 单独再拦一道，默认 n：-y 会取默认值，于是非交互模式下跳过而不是闷头升。
+  if [ "${cur%.*}" != "${new%.*}" ]; then
+    warn "跨 minor 升级：${cur} → ${new}"
+    info "这类升级历史上移除过配置字段（1.11 换 DNS 格式、1.14 移除 domain_strategy）"
+    info "沙箱阶段会实测配置，但 TUN 与系统路由相关的回归只有升级之后才暴露"
+    ask "确认继续？" n || {
+      info "已跳过。要升的话去掉 -y 交互确认，并先读一遍 release notes"
+      return 0
+    }
+  fi
 
   arch=$(detect_arch)
+  [ -n "$arch" ] || die "不支持的架构：$(uname -m)"
+
   local tmpd; tmpd=$(mktmpd)
   download "$tmpd/sb.tar.gz" "$GH_DL/v${new}/sing-box-${new}-darwin-${arch}.tar.gz" "内核 v$new" \
     || die "下载失败"
@@ -1425,27 +1611,118 @@ cmd_update() {
   local newbin="$tmpd/sing-box-${new}-darwin-${arch}/sing-box"
   [ -f "$newbin" ] || die "压缩包结构异常"
 
+  #--- 阶段 1：沙箱（现网服务继续跑，完全不受影响）------------------------
+  step "阶段 1/3　沙箱验证（现网服务不受影响）"
+  local wd stage vout chk port sbcfg
+  wd=$(mktmpd)
+  stage=$(_sb_stage_prefix "$newbin" "$wd") || die "沙箱安装失败"
+
+  vout=$("$stage" version 2>&1) || {
+    bad "新内核跑不起来："
+    printf '%s\n' "$vout" | sed 's/^/      /' >&2
+    die "阶段 1 失败，现网未被触碰（\$BIN 仍是 ${cur}）"
+  }
+  ok "新内核可执行：$(printf '%s' "$vout" | head -1)"
+
+  # 没有官方 checksum 可比对，完整性就验到「架构对得上」为止，并明说到此为止。
+  if printf '%s' "$vout" | grep -q "darwin/${arch}"; then
+    ok "架构匹配：darwin/${arch}"
+  else
+    die "架构不匹配：期望 darwin/${arch}，实际 $(printf '%s' "$vout" | sed -n 's/.*\(darwin\/[a-z0-9]*\).*/\1/p' | head -1)"
+  fi
+  dim "上游 release 不提供 checksum 文件，未做 sha256 完整性校验"
+
+  chk=$(mktmp)
+  if sudo "$stage" check -c "$CFG" >"$chk" 2>&1; then
+    ok "新内核校验当前配置通过"
+  else
+    bad "新内核不接受当前配置："
+    sed 's/^/      /' "$chk" >&2
+    die "阶段 1 失败，现网未被触碰（\$BIN 仍是 ${cur}）"
+  fi
+  _sb_warn_deprecated "$chk"
+
+  # check -c 只看语法与字段合法性：字段还在、语义变了它照样过。所以还要实跑一次。
+  port=$(_sb_free_port 10900)
+  [ -n "$port" ] || die "10900 起的 200 个端口全被占用，找不到可用的沙箱端口"
+  sudo cat "$CFG" > "$wd/live.json" 2>/dev/null || die "读不到当前配置 ${CFG}"
+  sbcfg="$wd/config.json"
+  _sb_derive_config "$wd/live.json" "$sbcfg" "$port" "$wd" || die "派生沙箱配置失败"
+  json_valid "$sbcfg" || die "派生出来的沙箱配置不是合法 JSON"
+  info "沙箱配置：去掉 tun、mixed 改到 ${port}、cache_file 指向临时目录"
+  _sb_probe_socks "$stage" "$sbcfg" "$port" "$wd" \
+    || die "阶段 1 失败，现网未被触碰（\$BIN 仍是 ${cur}）"
+
+  #--- 阶段 2：升级（此时才动现网）----------------------------------------
+  step "阶段 2/3　升级现网"
   sudo cp "$BIN" "$BIN.prev" || die "备份旧版失败"
   sudo install -m 755 "$newbin" "$BIN" || { sudo mv "$BIN.prev" "$BIN"; die "安装失败，已回滚"; }
   sudo xattr -d com.apple.quarantine "$BIN" 2>/dev/null || true
+  ok "已装入 v${new}（旧版备份在 ${BIN}.prev）"
 
-  local chk; chk=$(mktmp)
-  if "$BIN" version >/dev/null 2>&1 && sudo "$BIN" check -c "$CFG" >"$chk" 2>&1; then
-    ok "新版本校验配置通过"
-    grep -qi deprecated "$chk" && {
-      warn "存在废弃字段告警："
-      grep -i deprecated "$chk" | sed 's/^/        /' >&2
-    }
-    sudo rm -f "$BIN.prev"
-    cmd_restart
-    warn "srs 规则集有格式版本，接着跑：$(basename "$0") rules"
-  else
-    bad "新版本下配置校验失败，回滚"
+  if ! sudo "$BIN" check -c "$CFG" >"$chk" 2>&1; then
+    bad "现网位上校验配置失败："
     sed 's/^/      /' "$chk" >&2
-    sudo mv "$BIN.prev" "$BIN"
-    cmd_restart
+    _sb_rollback_to_prev "$cur"
     return 1
   fi
+
+  # ⚠️ cmd_restart 的返回值必须看。之前这里是裸调用，「起不来」这条路径
+  # 从来没有被走到过，而那恰恰是最需要回滚的时刻。
+  if ! cmd_restart; then
+    bad "新内核重启失败"
+    _sb_rollback_to_prev "$cur"
+    return 1
+  fi
+  if ! _sb_health; then
+    bad "升级后健康检查未通过"
+    _sb_rollback_to_prev "$cur"
+    return 1
+  fi
+
+  #--- 阶段 3：验收 -------------------------------------------------------
+  step "阶段 3/3　功能验收"
+  if ! _sb_verify_rounds; then
+    bad "功能验收两轮都没过"
+    _sb_rollback_to_prev "$cur"
+    return 1
+  fi
+
+  ok "升级完成：${cur} → ${new}"
+  info "旧版本保留在 ${BIN}.prev，下一次 update 才会覆盖它"
+  info "事后才发现问题：$(basename "$0") rollback"
+  warn "srs 规则集有格式版本，接着跑：$(basename "$0") rules"
+  return 0
+}
+
+# 把回滚从「升级过程中的一个分支」变成任何时候都能按的按钮：当时一切正常、
+# 半小时后才发现某个网站进不去，靠的就是这条。只保留一份 .prev，只能退一步。
+cmd_rollback() {
+  require_installed; need_root; acquire_lock
+  step "回滚到上一个内核"
+  [ -f "$BIN.prev" ] \
+    || die "没有 ${BIN}.prev —— 没有可回滚的上一个版本（只保留一份，且 update 成功之后才会有）"
+
+  local cur prev
+  cur=$("$BIN" version 2>/dev/null | head -1 | awk '{print $3}')
+  prev=$("$BIN.prev" version 2>/dev/null | head -1 | awk '{print $3}')
+  info "当前：${cur:-未知}"
+  info "回到：${prev:-未知}"
+  ask "确认回滚？" y || return 0
+
+  sudo mv "$BIN.prev" "$BIN" || die "回滚失败：换不回 ${BIN}"
+  sudo xattr -d com.apple.quarantine "$BIN" 2>/dev/null || true
+  ok "已换回 ${prev:-旧版本}"
+  cmd_restart || die "回滚后重启失败 —— 跑 $(basename "$0") doctor"
+  _sb_health || warn "健康检查未全过"
+
+  step "验收"
+  if _sb_verify_rounds; then
+    ok "回滚完成，功能验收通过"
+    return 0
+  fi
+  bad "已换回 ${prev:-旧版本}，但功能验收没过 —— 问题可能不在内核版本上，跑 $(basename "$0") doctor"
+  return 1
 }
 
 #=======================================================================
@@ -1694,7 +1971,10 @@ singbox.sh v$VERSION —— sing-box on macOS 全生命周期管理
   doctor              收集诊断并自动判读
 
 维护
-  update              升级内核（校验失败自动回滚）
+  update              升级内核：预检 → 沙箱验证 → 升级 → 验收
+                      沙箱阶段用临时前缀实跑新内核，现网服务不受影响；
+                      任一阶段失败自动回滚。跨 minor 会额外确认一次
+  rollback            换回上一个内核（update 成功后保留的 .prev）并重新验收
   mirror <sub>        test | set <url> | show | reset —— GitHub 下载镜像
   uninstall           卸载
 
@@ -1762,6 +2042,7 @@ case "${CMD:-status}" in
   config)    cmd_config ${ARGS[@]+"${ARGS[@]}"} ;;
   rules)     cmd_rules ;;
   update)    cmd_update ;;
+  rollback)  cmd_rollback ;;
   dns)       cmd_dns ${ARGS[@]+"${ARGS[@]}"} ;;
   mirror)    cmd_mirror ${ARGS[@]+"${ARGS[@]}"} ;;
   doctor)    cmd_doctor ;;
