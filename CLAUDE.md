@@ -5,8 +5,19 @@
 
 ## 验收
 
-`./singbox-selfcheck.sh` —— **现在是红的**：9 项里 2 项用了 `grep -nP`，macOS 的 BSD grep 不支持 `-P`，恒失败。
-既有坏账，不是你引入的。修它时 `singbox-selfcheck.sh` 是实现文件而不是测试文件，这是 `fix.testGlobs` 唯一的例外。
+```
+./singbox-selfcheck.sh && ./tests/selfcheck.test.sh
+```
+
+前半段是 `singbox.sh` 的静态自检（8 项），后半段验证这些检查项**真的在检查**——曾经有 2 项
+用了 GNU 专有的 `grep -P`，在 BSD grep 上恒报 `invalid option`，既抓不到违规也永远不会绿。
+`tests/fixtures/` 里的样本就是钉住这件事的。
+
+Stop 闸门开着（`check.stopHook = "on-edit"`）：改完代码要停下时会自动跑一次，红了停不下来，
+连续两次修不好则放行。改 `**/*.md` / `docs/**` / `.claude/**` 不触发。
+
+修 `singbox-selfcheck.sh` 本身时它是实现文件而不是测试文件——被 `fix.testGlobs` 锁住的是
+`tests/**`。
 
 ## 运行环境的硬约束
 
