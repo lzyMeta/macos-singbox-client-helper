@@ -2,7 +2,7 @@
   "version": 1,
   "check": {
     "command": "./singbox-selfcheck.sh && ./tests/selfcheck.test.sh",
-    "stopHook": "off"
+    "stopHook": "on-edit"
   },
   "fix": {
     "testGlobs": [
