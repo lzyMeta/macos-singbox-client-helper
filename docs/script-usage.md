@@ -89,7 +89,7 @@ singbox install --config ./config.json      # 真正执行
 
 **准备两样东西**：
 
-1. **填好的配置文件。** 六个占位符必须全部替换：`YOUR_VPSTRANS_ADDR`、`YOUR_SNI`、`YOUR_PUBLIC_KEY`、`YOUR_SHORT_ID`、`YOUR_UUID_VPSTRANS`、`YOUR_UUID_VPSRE`。两个 UUID 必须是标准的 8-4-4-4-12 格式。
+1. **填好的配置文件。** 七个占位符必须全部替换：`YOUR_VPSTRANS_ADDR`、`YOUR_SNI`、`YOUR_PUBLIC_KEY`、`YOUR_SHORT_ID`、`YOUR_UUID_VPSTRANS`、`YOUR_UUID_VPSRE`、`YOUR_CLASH_SECRET`。两个 UUID 必须是标准的 8-4-4-4-12 格式。
 2. **管理员密码。** TUN 建虚拟网卡、改路由表必须 root。
 
 装完还有两件事脚本做不了，它会提醒你：**关闭浏览器内置 DoH**，以及跑一次 `singbox rules`。

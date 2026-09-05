@@ -101,7 +101,7 @@ App → utun 虚拟网卡 → sniff（还原域名）→ DNS 劫持 → 路由�
 
 ## 1. 配置全文
 
-需要替换的占位符：`YOUR_VPSTRANS_ADDR`、`YOUR_SNI`、`YOUR_PUBLIC_KEY`、`YOUR_SHORT_ID`、`YOUR_UUID_VPSTRANS`、`YOUR_UUID_VPSRE`。
+需要替换的占位符：`YOUR_VPSTRANS_ADDR`、`YOUR_SNI`、`YOUR_PUBLIC_KEY`、`YOUR_SHORT_ID`、`YOUR_UUID_VPSTRANS`、`YOUR_UUID_VPSRE`、`YOUR_CLASH_SECRET`。
 
 > 两个 UUID 必须换成标准的 8-4-4-4-12 格式。
 
@@ -882,7 +882,8 @@ done
 
 #### `experimental.clash_api`（可选，排查分流的利器）
 
-开了之后可以用 Clash 面板看**每条活跃连接命中了哪条规则、走了哪个出站**，比翻日志直观得多。默认不开，需要时加上：
+开了之后可以用 Clash 面板看**每条活跃连接命中了哪条规则、走了哪个出站**，比翻日志直观得多。
+**`config/config.example.json` 里已经带上了它**，`secret` 是必须替换的占位符之一；不想要就把整个 `clash_api` 块删掉：
 
 ```json
 "experimental": {

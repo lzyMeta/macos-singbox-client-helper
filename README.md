@@ -94,6 +94,7 @@ $EDITOR config.json
 | `YOUR_SHORT_ID` | 服务端签发的 short ID |
 | `YOUR_UUID_VPSTRANS` | 走机房出口的 UUID |
 | `YOUR_UUID_VPSRE` | 走住宅出口的 UUID |
+| `YOUR_CLASH_SECRET` | Clash 面板的访问口令，换成一串随机字符 |
 
 两个 UUID 必须是标准的 `8-4-4-4-12` 格式。脚本会在安装的第一步检查是否还有未替换的占位符。
 

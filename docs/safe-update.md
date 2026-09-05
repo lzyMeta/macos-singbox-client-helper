@@ -191,7 +191,9 @@ fixture」，这条对 `tests/` 同样适用，不必再改。
 
 **① `experimental.clash_api` 是第四处会撞车的监听。** spec 只列了 `tun` / `mixed` / `cache_file` 三处，真实配置里还有 `clash_api.external_controller = "127.0.0.1:9090"`——现网实例占着它，沙箱实例起来就撞死在这个端口上，且与新内核好不好毫无关系。`external_ui: "monitor"` 还会在启动时去下载一份 UI。派生逻辑改为：**只保留一个被改到闲置端口的 `mixed`/`socks` inbound，其余 inbound 全丢**；`experimental` 里整块删掉 `clash_api`；`log.output` 若指向文件也改到临时目录。
 
-`config/config.example.json` 这份模板里恰好没有 `clash_api`，所以对着模板核对是看不出来的。
+`config/config.example.json` 这份模板当时**没有** `clash_api`，所以对着模板核对是看不出来的——
+事后已把它补进模板（`external_ui` 用 `"ui"`，与 `cmd_uninstall` 清理残留时找的目录名一致），
+这样下次拿模板核派生逻辑就能覆盖到这一处。
 
 **② `tests/` 的现网端口写死 10808，撞上了本机正在跑的真 sing-box。** 桩的监听 bind 失败即死，而 `_sb_health` 的「端口在听」照样成立——**测试是被真实服务喂绿的**，不是被桩。这与本仓库 `tests/selfcheck.test.sh` 头部记的那次回归是同一类：一条不因违规而红的检查比没有检查更糟。修法两条：端口在 `setup` 里从 21800 / 21900 起动态探测；**桩起不来当场 `exit 1`**，不静默放过。
 
