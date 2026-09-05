@@ -1104,7 +1104,15 @@ _sb_fetch_cn_ip() {
     body=$(curl -s --max-time 8 "$u" 2>/dev/null)
     ip=$(printf '%s' "$body" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -1)
     if [ -n "$ip" ]; then
-      printf '%s|%s' "$ip" "$(printf '%s' "$body" | tr '\n' ' ' | sed 's/  */ /g' | cut -c1-90)"
+      # 归属信息按**行**取前 3 行（cip.cc 是 IP / 地址 / 运营商，后面还有数据二、
+      # 数据三、URL 几行没用的）。按字符硬截会断在字段中间，打出来像坏了。
+      # 制表符也要一起挤掉——cip.cc 用的是 `IP<TAB>: ...`。
+      local desc
+      desc=$(printf '%s' "$body" | head -3 | tr '\n' ' ' \
+             | sed 's/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//')
+      # 备胎或异常响应可能是很长的一行，留个上限防刷屏；真截了就明说。
+      [ ${#desc} -gt 100 ] && desc="$(printf '%s' "$desc" | cut -c1-100)…"
+      printf '%s|%s' "$ip" "$desc"
       return 0
     fi
   done
