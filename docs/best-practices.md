@@ -1321,6 +1321,15 @@ ifconfig | grep inet6                # 只应剩 fe80:: 与 ::1
 * `https://cloudflare-quic.com/` 应显示未使用 HTTP/3
 * `ping 192.168.1.1`、内网 SSH、AirDrop 发现设备、局域网打印机
 
+> **不要用 `curl --http3` 来验这一条。** macOS 自带的 curl（8.7.1，SecureTransport）
+> 没有编进 HTTP/3，`curl --http3 -V` 恒为失败——那不是"QUIC 被挡住了"，是这条命令
+> 压根测不了。`singbox verify` 第 4 步改用另一种测法：往 `cloudflare-quic.com:443`
+> 和 `quic.rocks:4433` 发一个 version 字段填保留值的 QUIC long-header 包，按 RFC 9000 §6，
+> 服务端认不出版本时**必须**回一个 Version Negotiation 包。**收到回包 = UDP/443 出得去
+> = 禁 QUIC 规则没生效**；两个端点全超时才算已阻断。
+>
+> 已知局限：全超时时"已阻断"与"本机 UDP 整体出不去"分不开，脚本按前者这个乐观读法判。
+
 **不通过时**
 
 * **仍在用 HTTP/3**：先清浏览器的 socket 缓存（Chrome：`chrome://net-internals/#sockets` → Flush socket pools），再确认禁 QUIC 那条规则在广告拦截之前、且 `network` 和 `port` 两个字段都写了。
@@ -1343,7 +1352,11 @@ curl -s https://cip.cc                # 国内站直连 → 应显示本地城�
 |---|---|---|
 | `api.ipify.org` | 兜底出站可用 | 返回 vpstrans 的机房 IP |
 | `ipinfo.io/json` | **服务端按 UUID 分流是否生效** | 与上一条**必须是不同地址**，且 ISP 为住宅运营商而非机房 |
-| `cip.cc` | 国内直连未被代理 | 显示你本地的城市与运营商 |
+| `cip.cc` | 国内直连未被代理 | 显示你本地的城市与运营商，且**这个 IP 不等于第一条走 SOCKS 拿到的出口 IP** |
+
+> 最后那半句是 `singbox verify` 第 5 步的机器判据：两者相等就说明国内流量全被代理接走了，
+> 直连规则没生效。`cip.cc` 抽风时脚本会依次退到 `myip.ipip.net`、`ip.3322.net`，
+> 三家全挂才报失败——"这一步没有结论"本身就是一条结论，不该被当成通过。
 
 **第二条最关键，也最容易被跳过。** 它验的是"实际从哪里出网"，而日志只能告诉你"派给了谁"——**证明不了 vpsre 的出口真是住宅 IP**。vpsre 到住宅节点那段中转在服务端，客户端看不见；中转挂了的话日志照样打 `outbound/vless[vpsre]`，出口却已经变回机房 IP。这是客户端侧唯一能发现它的手段。
 
