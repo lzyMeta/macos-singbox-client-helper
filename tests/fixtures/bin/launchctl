@@ -12,15 +12,18 @@ _live_version() { "${SB_FAKE_LIVE_BIN:-/nonexistent}" version 2>/dev/null | head
 
 _start() {
   if [ "$(_live_version)" = "${SB_FAKE_START_FAIL:-}" ]; then
-    echo 0 > "$S/running"           # kickstart 本身成功，进程没留住
-    return 0
+    # kickstart 本身成功，进程没留住——端口自然也跟着松开
+    _stop; return 0
   fi
   echo 1 > "$S/running"
   # 真的占住现网端口：_sb_health 的「监听端口在听」是 bind 探测，不占就测不到东西
   if [ -n "${SB_FAKE_LIVE_PORT:-}" ] && [ ! -s "$S/listener.pid" ]; then
     python3 -c 'import socket,sys,time
-s=socket.socket(); s.bind(("127.0.0.1",int(sys.argv[1]))); s.listen(16); time.sleep(600)' \
-      "$SB_FAKE_LIVE_PORT" >/dev/null 2>&1 &
+socks=[]
+for a in sys.argv[1:]:
+    s=socket.socket(); s.bind(("127.0.0.1",int(a))); s.listen(16); socks.append(s)
+time.sleep(600)' \
+      "$SB_FAKE_LIVE_PORT" ${SB_FAKE_LIVE_CLASH_PORT:-} >/dev/null 2>&1 &
     echo $! > "$S/listener.pid"
     for _ in 1 2 3 4 5 6 7 8 9 10; do
       python3 -c 'import socket,sys

@@ -60,6 +60,8 @@ DEFAULT_MIRRORS="https://ghfast.top https://gh-proxy.com https://ghproxy.net htt
 NET_TIMEOUT=25
 CONNECT_TIMEOUT=4      # 建连超时：镜像死了要快速失败，不要干等
 VERIFY_RETRY_WAIT=5    # 阶段 3 验收失败后隔多久重试那一轮
+SANDBOX_WAIT=40        # 阶段 1 等沙箱实例监听起来的秒数。真实配置可能有几十个
+                       # type=remote 的 rule_set，而沙箱缓存是空的，冷启动要现下一遍
 PROBE_TIMEOUT=6        # 探测单个镜像的总时限
 STALL_SECS=20          # 下载速度低于阈值持续这么久就放弃，换下一个
 STALL_BYTES=2048
@@ -1468,18 +1470,32 @@ _sb_derive_config() {
 import json, sys
 src, dst, port, workdir = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
 d = json.load(open(src))
-d["inbounds"] = [i for i in d.get("inbounds", []) if i.get("type") != "tun"]
-for i in d["inbounds"]:
+
+# 沙箱只需要一个能建链的出入口。除了那一个被改到闲置端口的 mixed/socks，
+# 其余 inbound 一律丢掉——tun 会去抢虚拟网卡，别的固定端口会跟现网撞。
+probe = None
+for i in d.get("inbounds", []):
     if i.get("type") in ("mixed", "socks"):
-        i["listen"] = "127.0.0.1"
-        i["listen_port"] = port
-        break
-else:
-    d["inbounds"].append({"type": "mixed", "tag": "sandbox-in",
-                          "listen": "127.0.0.1", "listen_port": port})
+        probe = dict(i); break
+if probe is None:
+    probe = {"type": "mixed", "tag": "sandbox-in"}
+probe["listen"] = "127.0.0.1"
+probe["listen_port"] = port
+d["inbounds"] = [probe]
+
 exp = d.get("experimental")
-if isinstance(exp, dict) and isinstance(exp.get("cache_file"), dict):
-    exp["cache_file"]["path"] = workdir + "/cache.db"
+if isinstance(exp, dict):
+    if isinstance(exp.get("cache_file"), dict):
+        exp["cache_file"]["path"] = workdir + "/cache.db"
+    # clash_api 是第四处会撞车的监听：external_controller 绑固定端口，
+    # external_ui 还会在启动时去下载一份 UI。沙箱一样都用不上，整块删掉。
+    exp.pop("clash_api", None)
+
+# log.output 若指向文件，两个实例会往同一个文件里写
+log = d.get("log")
+if isinstance(log, dict) and log.get("output"):
+    log["output"] = workdir + "/sandbox.log"
+
 json.dump(d, open(dst, "w"), ensure_ascii=False, indent=2)
 PY
 }
@@ -1500,10 +1516,11 @@ _sb_probe_socks() {
   local bin="$1" cfg="$2" port="$3" wd="$4" pid=0 up=1 rc=1 i ip
   "$bin" run -c "$cfg" -D "$wd" >"$wd/run.log" 2>&1 &
   pid=$!
-  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+  i=0
+  while [ "$i" -lt "$SANDBOX_WAIT" ]; do
     kill -0 "$pid" 2>/dev/null || break        # 进程已经死了，别再干等
     if _sb_port_listening "$port"; then up=0; break; fi
-    sleep 1
+    i=$((i + 1)); sleep 1
   done
   if [ "$up" != 0 ]; then
     bad "沙箱实例没能起来（端口 ${port} 始终没有监听）"

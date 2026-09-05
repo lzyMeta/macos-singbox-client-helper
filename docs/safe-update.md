@@ -185,9 +185,23 @@ fixture」，这条对 `tests/` 同样适用，不必再改。
 
 这条是测试抓出来的：同一次运行里，阶段 2 报「没有 utun」、几秒后的回滚报「TUN 路由存在」。
 
+### 真机配置暴露出的两个缺陷（spec 与首轮实现都漏了）
+
+拿 `/usr/local/etc/sing-box/config.json`（真实在跑的那份）对派生逻辑做对照时发现的：
+
+**① `experimental.clash_api` 是第四处会撞车的监听。** spec 只列了 `tun` / `mixed` / `cache_file` 三处，真实配置里还有 `clash_api.external_controller = "127.0.0.1:9090"`——现网实例占着它，沙箱实例起来就撞死在这个端口上，且与新内核好不好毫无关系。`external_ui: "monitor"` 还会在启动时去下载一份 UI。派生逻辑改为：**只保留一个被改到闲置端口的 `mixed`/`socks` inbound，其余 inbound 全丢**；`experimental` 里整块删掉 `clash_api`；`log.output` 若指向文件也改到临时目录。
+
+`config/config.example.json` 这份模板里恰好没有 `clash_api`，所以对着模板核对是看不出来的。
+
+**② `tests/` 的现网端口写死 10808，撞上了本机正在跑的真 sing-box。** 桩的监听 bind 失败即死，而 `_sb_health` 的「端口在听」照样成立——**测试是被真实服务喂绿的**，不是被桩。这与本仓库 `tests/selfcheck.test.sh` 头部记的那次回归是同一类：一条不因违规而红的检查比没有检查更糟。修法两条：端口在 `setup` 里从 21800 / 21900 起动态探测；**桩起不来当场 `exit 1`**，不静默放过。
+
+顺带把阶段 1 等待沙箱监听的窗口抽成 `SANDBOX_WAIT=40`（原为写死 15 次 ×1s）。真实配置有 21 个 `type: remote` 的 rule_set 且沙箱缓存是空的，冷启动要现下一遍——这正是评审时列为 UNVERIFIED SUSPICION 的那条。
+
 ### 验证
 
 `./singbox-selfcheck.sh && ./tests/run.sh`，已进 `.claude/sdlc.json` 的 `check.command`。
+
+断言 11（沙箱不与现网 `clash_api` 撞车）同样是先红后绿：修桩之后 **通过 7 / 失败 4**，红的内容点名 `沙箱实例没能起来（端口 10900 始终没有监听）`；删掉 `clash_api` 后转绿。
 
 先写断言跑出红（**通过 2 / 失败 8**，红的内容点名 `升级到 1.13.19？ → 取默认（n）`，即上面第 1 条），再写实现跑出绿（**通过 18 / 失败 0**，退出码 0）。因为修掉的是时序相关的偶发 bug，绿连跑了 3 次确认稳定。
 

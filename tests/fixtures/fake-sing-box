@@ -53,16 +53,24 @@ case "${1:-}" in
     while [ $# -gt 0 ]; do case "$1" in -c) cfg="${2:-}"; shift 2 ;; *) shift ;; esac; done
     exec python3 - "$cfg" <<'PY'
 import json, socket, sys, time
-port = 0
+ports = []
 try:
     d = json.load(open(sys.argv[1]))
     for i in d.get("inbounds", []):
         if i.get("type") in ("mixed", "socks"):
-            port = int(i.get("listen_port", 0)); break
+            ports.append(int(i.get("listen_port", 0))); break
+    # clash_api 的 external_controller 也是一个真实的监听——现网实例占着它的时候，
+    # 第二个实例就是死在这里。桩不还原这一点，派生逻辑漏删 clash_api 也测不出来。
+    ec = d.get("experimental", {}).get("clash_api", {}).get("external_controller")
+    if ec:
+        ports.append(int(str(ec).rsplit(":", 1)[-1]))
 except Exception:
     pass
-if port:
-    s = socket.socket(); s.bind(("127.0.0.1", port)); s.listen(16)
+socks = []
+for p in ports:
+    if not p:
+        continue
+    s = socket.socket(); s.bind(("127.0.0.1", p)); s.listen(16); socks.append(s)
 time.sleep(600)
 PY
     ;;

@@ -38,6 +38,29 @@ bin_version() { [ -x "$1" ] && "$1" version 2>/dev/null | head -1 | awk '{print 
 
 sig() { [ -f "$1" ] && shasum "$1" | awk '{print $1}'; }
 
+# 从 $1 起找一个真正空闲的端口。⚠️ 不要写死 10808：这台机器上很可能正跑着真的
+# sing-box，撞上之后桩的监听 bind 失败即死，而「端口在听」照样成立——测试会因为
+# 真实服务而变绿，测不到任何东西。
+free_port() {
+  python3 - "$1" <<'PORTPY'
+import socket, sys
+for p in range(int(sys.argv[1]), int(sys.argv[1]) + 300):
+    s = socket.socket()
+    try:
+        s.bind(("127.0.0.1", p))
+    except OSError:
+        continue
+    finally:
+        s.close()
+    print(p); break
+PORTPY
+}
+
+port_busy() {
+  python3 -c 'import socket,sys
+sys.exit(0 if socket.socket().connect_ex(("127.0.0.1",int(sys.argv[1])))==0 else 1)' "$1"
+}
+
 setup() {
   teardown
   ROOT=$(mktemp -d)
@@ -47,23 +70,47 @@ setup() {
   mkdir -p "$ROOT/prefix/bin" "$ROOT/prefix/etc/sing-box"
 
   export SB_FAKE_LIVE_BIN="$ROOT/prefix/bin/sing-box"
-  export SB_FAKE_LIVE_PORT=10808
+  SB_FAKE_LIVE_PORT=$(free_port 21800);        export SB_FAKE_LIVE_PORT
+  SB_FAKE_LIVE_CLASH_PORT=$(free_port 21900);  export SB_FAKE_LIVE_CLASH_PORT
   export SB_FAKE_LATEST="${1:-$NEW}"
   echo 1 > "$SB_FAKE_STATE/running"          # 现网服务在跑
   echo 0 > "$SB_FAKE_STATE/verify_calls"
+  # ⚠️ 光写状态位不够：阶段 1 跑的时候必须真的有进程占着现网的监听端口，
+  # 否则「沙箱与现网撞车」这类断言就是假绿——撞不上，因为压根没人占。
+  python3 -c 'import socket,sys,time
+socks=[]
+for a in sys.argv[1:]:
+    s=socket.socket(); s.bind(("127.0.0.1",int(a))); s.listen(16); socks.append(s)
+time.sleep(600)' "$SB_FAKE_LIVE_PORT" "$SB_FAKE_LIVE_CLASH_PORT" >/dev/null 2>&1 &
+  echo $! > "$SB_FAKE_STATE/listener.pid"
+  local w
+  for w in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    port_busy "$SB_FAKE_LIVE_PORT" && break
+    /bin/sleep 0.1
+  done
+  # ⚠️ 装置起不来必须当场炸。静默放过的话，后面每一条断言都在测一个不存在的现网。
+  if ! kill -0 "$(cat "$SB_FAKE_STATE/listener.pid")" 2>/dev/null \
+     || ! port_busy "$SB_FAKE_LIVE_PORT" || ! port_busy "$SB_FAKE_LIVE_CLASH_PORT"; then
+    printf '  FAIL  装置失败：现网监听没起来（%s / %s）\n' \
+      "$SB_FAKE_LIVE_PORT" "$SB_FAKE_LIVE_CLASH_PORT"
+    exit 1
+  fi
 
   # 现网配置：tun + mixed:10808 + cache_file —— 派生逻辑要处理的三处冲突齐了
-  cat > "$ROOT/prefix/etc/sing-box/config.json" <<'JSON'
+  cat > "$ROOT/prefix/etc/sing-box/config.json" <<JSON
 {
   "log": { "level": "info" },
   "inbounds": [
     { "type": "tun", "tag": "tun-in", "interface_name": "utun4",
       "address": ["172.19.0.1/30"], "auto_route": true },
-    { "type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": 10808 }
+    { "type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1",
+      "listen_port": ${SB_FAKE_LIVE_PORT} }
   ],
   "outbounds": [ { "type": "direct", "tag": "direct" } ],
   "experimental": {
-    "cache_file": { "enabled": true, "path": "/usr/local/etc/sing-box/cache.db" }
+    "cache_file": { "enabled": true, "path": "/usr/local/etc/sing-box/cache.db" },
+    "clash_api": { "external_controller": "127.0.0.1:${SB_FAKE_LIVE_CLASH_PORT}",
+                   "external_ui": "monitor" }
   }
 }
 JSON
@@ -186,6 +233,19 @@ if [ "$CODE" = 0 ] && [ "$(bin_version "$(BIN)")" = "$NEW" ]; then
   fi
 else
   ng "rollback 有 .prev：前置的 update 就没成功（退出 ${CODE}）"
+fi
+
+#-- 11. 沙箱不与现网的 clash_api 端口撞车 -------------------------------
+# 真实配置里 experimental.clash_api.external_controller 是第四处会撞的监听
+# （spec 只列了 tun / mixed / cache_file 三处）。现网实例占着它，派生配置
+# 若原样留着 clash_api，沙箱实例就起不来——而这跟新内核好不好毫无关系。
+setup
+sb update
+if [ "$CODE" = 0 ] && [ "$(bin_version "$(BIN)")" = "$NEW" ] \
+   && ! grep -q '沙箱实例没能起来' "$LOG"; then
+  ok "沙箱避开了现网的 clash_api 端口（${SB_FAKE_LIVE_CLASH_PORT}）"
+else
+  ng "沙箱撞上了现网的 clash_api 端口：派生配置该把 clash_api 去掉（退出 ${CODE}）"
 fi
 
 #-- 10. rollback 无 .prev ----------------------------------------------
