@@ -126,7 +126,7 @@ JSON
 
   unset SB_FAKE_CHECK_FAIL SB_FAKE_RUN_FAIL SB_FAKE_START_FAIL \
         SB_FAKE_SANDBOX_SOCKS_FAIL SB_FAKE_VERIFY_FAIL SB_FAKE_NO_TUN \
-        SB_FAKE_PROBE_FAIL SB_FAKE_DEPRECATED
+        SB_FAKE_PROBE_FAIL SB_FAKE_DEPRECATED SB_FAKE_TUN_HOST_ONLY
 }
 
 teardown() {
@@ -246,6 +246,18 @@ if [ "$CODE" = 0 ] && [ "$(bin_version "$(BIN)")" = "$NEW" ] \
   ok "沙箱避开了现网的 clash_api 端口（${SB_FAKE_LIVE_CLASH_PORT}）"
 else
   ng "沙箱撞上了现网的 clash_api 端口：派生配置该把 clash_api 去掉（退出 ${CODE}）"
+fi
+
+#-- 12. TUN 接口在、但流量没被接管：必须回滚 ----------------------------
+# 路由表里出现 utun 不等于 TUN 接管了流量。真机上 utun9527 有 9 条路由，
+# 只有 128.0/1 那条是接管的证据；172.18.0.1 … UH 只说明接口建起来了。
+# 宽匹配整张表会把「接口在、流量从 en0 裸奔」判成健康——正是本功能要挡的故障。
+setup
+SB_FAKE_TUN_HOST_ONLY=1 sb update
+if [ "$CODE" != 0 ] && [ "$(bin_version "$(BIN)")" = "$OLD" ]; then
+  ok "TUN 只剩主机路由：判为不健康并回滚"
+else
+  ng "TUN 只剩主机路由：期望非 0 且回到 ${OLD}（退出 ${CODE}，实际 $(bin_version "$(BIN)")）"
 fi
 
 #-- 10. rollback 无 .prev ----------------------------------------------

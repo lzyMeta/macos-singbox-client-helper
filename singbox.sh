@@ -1541,13 +1541,17 @@ _sb_probe_socks() {
 _sb_health() {
   local n=0 port routes
   running && ok "进程存活" || { bad "进程未出现"; n=$((n + 1)); }
-  # ⚠️ 别写成 `netstat … | grep -q utun`：grep -q 一命中就退出，netstat 吃 SIGPIPE
-  # 死掉，pipefail 把那个 141 当成整条管道的退出码——「路由在」于是被判成「路由没了」，
-  # 而且撞不撞得上取决于调度时机，是偶发的。先落变量再匹配，跟 cmd_status 一个写法。
-  routes=$(netstat -rn -f inet 2>/dev/null)
+  # ⚠️ 两处都别想当然：
+  # 1) 别写成 `netstat … | grep -q utun`。grep -q 一命中就退出，netstat 吃 SIGPIPE
+  #    死掉，pipefail 把那个 141 当成整条管道的退出码——「路由在」被判成「路由没了」，
+  #    撞不撞得上取决于调度时机，是偶发的。这里的 grep 不带 -q，会读到 EOF，没这问题。
+  # 2) 别拿整张表宽匹配 utun。TUN 接口自身那条 UH 主机路由只证明接口建起来了，
+  #    不证明流量被接管；接口在而 auto_route 没装上，流量就从 en0 裸奔——那正是
+  #    这个功能要挡的故障。判据与 cmd_status 一致：先过滤出默认/分流默认路由再看。
+  routes=$(netstat -rn -f inet 2>/dev/null | grep -E 'default|^0/1|^128\.0/1')
   case "$routes" in
-    *utun*) ok "TUN 路由存在" ;;
-    *)      bad "路由表里没有 utun —— TUN 未接管"; n=$((n + 1)) ;;
+    *utun*) ok "TUN 已接管默认路由" ;;
+    *)      bad "默认路由没有指向 utun —— TUN 未接管"; n=$((n + 1)) ;;
   esac
   port=$(sock_addr); port="${port##*:}"
   if _sb_port_listening "$port"; then
@@ -1666,7 +1670,7 @@ cmd_update() {
   sbcfg="$wd/config.json"
   _sb_derive_config "$wd/live.json" "$sbcfg" "$port" "$wd" || die "派生沙箱配置失败"
   json_valid "$sbcfg" || die "派生出来的沙箱配置不是合法 JSON"
-  info "沙箱配置：去掉 tun、mixed 改到 ${port}、cache_file 指向临时目录"
+  info "沙箱配置：只留一个 mixed（改到 ${port}）、去掉 clash_api、cache_file 指向临时目录"
   _sb_probe_socks "$stage" "$sbcfg" "$port" "$wd" \
     || die "阶段 1 失败，现网未被触碰（\$BIN 仍是 ${cur}）"
 

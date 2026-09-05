@@ -12,5 +12,5 @@ echo "	inet6 ::1 prefixlen 128"
 echo "en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500"
 echo "	inet6 fe80::1%en0 prefixlen 64 scopeid 0x4"
 echo "	inet 192.168.1.20 netmask 0xffffff00 broadcast 192.168.1.255"
-[ "${SB_FAKE_NO_TUN:-}" != 1 ] && echo "utun4: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 9000"
+[ "${SB_FAKE_NO_TUN:-}" != 1 ] && echo "utun9527: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 9000"
 exit 0
