@@ -124,9 +124,15 @@ JSON
   ( cd "$ROOT/pkg" && tar czf "$ROOT/kernel.tar.gz" "sing-box-${SB_FAKE_LATEST}-darwin-${arch}" )
   export SB_FAKE_TARBALL="$ROOT/kernel.tar.gz"
 
+  # ⚠️ 阶段 3 的验收会跑 cmd_verify 第 4 步，那一步是自己发 UDP 包的真探测。
+  # 不钉死结果的话，这里每条用例都会去连公网：联网时判「QUIC 未阻断」→ 阶段 3
+  # 变成策略档失败，离线时白等两个超时。
+  export SB_FAKE_QUIC=blocked
+
   unset SB_FAKE_CHECK_FAIL SB_FAKE_RUN_FAIL SB_FAKE_START_FAIL \
         SB_FAKE_SANDBOX_SOCKS_FAIL SB_FAKE_VERIFY_FAIL SB_FAKE_NO_TUN \
-        SB_FAKE_PROBE_FAIL SB_FAKE_DEPRECATED SB_FAKE_TUN_HOST_ONLY
+        SB_FAKE_PROBE_FAIL SB_FAKE_DEPRECATED SB_FAKE_TUN_HOST_ONLY \
+        SB_FAKE_DIG_FAIL SB_FAKE_NO_GW SB_FAKE_PING_FAIL SB_FAKE_CN_FAIL
 }
 
 teardown() {
@@ -193,7 +199,7 @@ else
   ng "阶段 2 起不来：期望非 0 且回到 ${OLD}（退出 ${CODE}，实际 $(bin_version "$(BIN)")）"
 fi
 
-#-- 6. 阶段 3 两轮都失败：回滚 ------------------------------------------
+#-- 6. 阶段 3 两轮都失败：回滚（链路档，与下面第 13 条正好是分档的两半）------
 setup
 SB_FAKE_VERIFY_FAIL=all sb update
 if [ "$CODE" != 0 ] && [ "$(bin_version "$(BIN)")" = "$OLD" ]; then
@@ -209,6 +215,20 @@ if [ "$CODE" = 0 ] && [ "$(bin_version "$(BIN)")" = "$NEW" ]; then
   ok "阶段 3 第一轮败第二轮过：不回滚，退出 0"
 else
   ng "阶段 3 重试：期望 0/${NEW}，实际 ${CODE}/$(bin_version "$(BIN)")"
+fi
+
+#-- 13. 阶段 3 只有策略档失败：不回滚 ------------------------------------
+# 「分档」这个决定唯一能被机械证伪的地方。QUIC 没被挡住是路由策略问题，
+# 换回旧内核一个字都改不了——真回滚了，等于每次 update 都被一条修不好的
+# 检查项撤销掉。要求：退出 0、新内核在位、.prev 还在、日志里说清了为什么放行。
+setup
+SB_FAKE_QUIC=open sb update
+if [ "$CODE" = 0 ] && [ "$(bin_version "$(BIN)")" = "$NEW" ] \
+   && [ "$(bin_version "$(BIN).prev")" = "$OLD" ] \
+   && grep -q '策略档' "$LOG"; then
+  ok "阶段 3 仅策略档失败：不回滚，退出 0，新内核与 .prev 都在"
+else
+  ng "阶段 3 仅策略档失败：期望 0/${NEW}/${OLD} 且日志点名策略档（实际 ${CODE}/$(bin_version "$(BIN)")/$(bin_version "$(BIN).prev")）"
 fi
 
 #-- 8. 跨 minor 且非交互：不升级 ----------------------------------------

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# 假 dscacheutil。_sb_resolve_a 的第 3 级。
+# ⚠️ 真机上查不到也是 exit 0 + 空输出，不是非 0——降级链因此只能看输出，不能看退出码。
+#   SB_FAKE_DSCACHEUTIL_FAIL=1  查不到
+#   SB_FAKE_DSCACHEUTIL_IP=<ip> 改写返回的 A 记录
+[ "${SB_FAKE_DSCACHEUTIL_FAIL:-}" = 1 ] && exit 0
+echo "name: www.google.com"
+echo "ip_address: ${SB_FAKE_DSCACHEUTIL_IP:-142.250.196.132}"
+exit 0

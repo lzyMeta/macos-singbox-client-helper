@@ -1,2 +1,10 @@
 #!/usr/bin/env bash
+# 假 ping。调用次数记进状态目录，用来断言第 5 步真的连试了 3 次——
+# 只看「判定为不通」证明不了重试，一次就放弃也会得到同样的结论。
+#   SB_FAKE_PING_FAIL=1  一律不通
+S="${SB_FAKE_STATE:-}"
+if [ -n "$S" ] && [ -d "$S" ]; then
+  n=$(( $(cat "$S/ping_calls" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$S/ping_calls"
+fi
+[ "${SB_FAKE_PING_FAIL:-}" = 1 ] && exit 2
 exit 0

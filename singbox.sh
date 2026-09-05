@@ -92,11 +92,20 @@ warn() { printf '%s  ! %s%s\n' "$C_WARN" "$*" "$C_N" >&2; }
 bad()  { printf '%s  ✗ %s%s\n' "$C_ERR" "$*" "$C_N" >&2; }
 die()  { bad "$*"; exit 1; }
 
-# 验收失败计数。cmd_verify 里凡是打 ✗ 的分支都要走 vbad——否则那些失败会被
-# 函数末尾那条语句的退出码盖掉，调用方（阶段 3 的回滚判定）看到的永远是 0。
-# warn 不计数：ipinfo.io 取不到、curl 不支持 http3 这类是软告警，抖一下不该回滚。
+# 验收失败计数，分两档——判据只有一条：**回滚到旧内核能不能把它换回来**。
+#
+#   链路档 vbad   节点链路断了、出口 IP 不对、冒出全局 IPv6。换内核有可能修好，该回滚。
+#   策略档 vpbad  DNS 污染或解析手段全废、QUIC 没被挡住、国内直连失效、参照站点取不到
+#                 数据。这些是路由策略与环境的问题，回滚一个都换不回来，反倒会让每次
+#                 update 都在阶段 3 白白回滚一次。
+#
+# 两档都不许拿 warn 打发过去。warn 不计数，于是「测不了」和「测过了」在终端上长得
+# 一模一样、退出码都是 0——那正是这套分档要消除的东西。cmd_verify 里凡是打 ✗ 的
+# 分支都必须走 vbad / vpbad，否则失败会被函数末尾那条语句的退出码盖掉。
 VERIFY_BAD=0
-vbad() { VERIFY_BAD=$((VERIFY_BAD + 1)); bad "$*"; }
+VERIFY_POLICY_BAD=0
+vbad()  { VERIFY_BAD=$((VERIFY_BAD + 1)); bad "$*"; }
+vpbad() { VERIFY_POLICY_BAD=$((VERIFY_POLICY_BAD + 1)); bad "$*"; }
 
 #=======================================================================
 # 基础设施：清理、锁、sudo、交互
@@ -1003,9 +1012,109 @@ cmd_syscheck() {
 #=======================================================================
 # verify
 #=======================================================================
+
+# 解析一个域名的 A 记录，四级降级：dig → host → dscacheutil → python3。
+# 任一级拿到结果就采用；四级全废才返回 1。
+#
+# 原实现只认 dig 一个，`command -v dig` 一 miss 就把整步 dim 跳过——而 dig 是
+# macOS 自带的 /usr/bin/dig，同目录还躺着 host / dscacheutil，脚本本身又硬依赖
+# python3。根本不缺解析手段，缺的是去用它们。
+#
+# ⚠️ 四级全废是「本机没有可用解析手段」，跟「解析到了但结果可疑」是两回事，
+# 调用方必须分开报——把前者也说成污染，会把人送去查一个根本没坏的 DNS。
+# ⚠️ dscacheutil 查不到时也是 exit 0 + 空输出，所以每一级都只看输出、不看退出码。
+#
+# SB_FAKE_PY_RESOLVE_FAIL 只服务于测试：第 4 级是内联 python3，PATH 桩拦不住它，
+# 联网机器上它总会成功，「四级全废」那条断言就永远是假绿。
+_sb_resolve_a() {
+  local name="$1" out
+  out=$(dig +short +time=3 +tries=1 "$name" 2>/dev/null \
+        | grep -E '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$' | head -3)
+  [ -n "$out" ] && { printf '%s\n' "$out"; return 0; }
+  out=$(host -W 3 "$name" 2>/dev/null | awk '/has address/ {print $NF}' | head -3)
+  [ -n "$out" ] && { printf '%s\n' "$out"; return 0; }
+  out=$(dscacheutil -q host -a name "$name" 2>/dev/null | awk '/^ip_address:/ {print $2}' | head -3)
+  [ -n "$out" ] && { printf '%s\n' "$out"; return 0; }
+  if [ "${SB_FAKE_PY_RESOLVE_FAIL:-}" != 1 ]; then
+    out=$(python3 - "$name" <<'PY' 2>/dev/null
+import socket, sys
+try:
+    print("\n".join(sorted({i[4][0] for i in socket.getaddrinfo(sys.argv[1], 80, socket.AF_INET)})[:3]))
+except Exception:
+    pass
+PY
+)
+    [ -n "$out" ] && { printf '%s\n' "$out"; return 0; }
+  fi
+  return 1
+}
+
+# QUIC 是否还通得出去。返回 0 = 通（禁 QUIC 规则没生效，该报失败），1 = 已阻断。
+#
+# 不再走 `curl --http3`：本机 curl 8.7.1 是 SecureTransport 版，压根没编 HTTP/3，
+# 那半步从来没有真跑过，只是每次都 dim 一行「跳过」。改为自己发包——
+# 构造一个 version=0x1a2a3a4a（RFC 9000 §15 的保留版本，永远不会被真正支持）的
+# long-header Initial 包，填到 1200 字节发过去；按 RFC 9000 §6，服务端收到不认识的
+# 版本**必须**回一个 Version Negotiation 包（version 字段为 0x00000000）。
+# 收到回包 = UDP/443 出得去 = QUIC 没被挡住。
+#
+# 两个端点任一收到回包就算通。它们都不在任何路由规则里，加备胎不动配置。
+# ⚠️ 已知局限：全部超时时，「已阻断」与「本机 UDP 整体出不去」区分不了，当前按
+# 「已阻断」这个乐观读法判。要区分得再引一个已知不该被拦的 UDP 对照端点。
+#
+# SB_FAKE_QUIC 只服务于测试：探测是内联 python3，PATH 桩拦不住它，没有这个后门
+# 第 4 步就没法在离线的测试里驱动。
+_sb_quic_open() {
+  case "${SB_FAKE_QUIC:-}" in
+    open)    return 0 ;;
+    blocked) return 1 ;;
+  esac
+  python3 - <<'PY' >/dev/null 2>&1
+import os, socket, struct, sys
+
+TARGETS = [("cloudflare-quic.com", 443), ("quic.rocks", 4433)]
+
+def probe(host, port):
+    dcid, scid = os.urandom(8), os.urandom(8)
+    pkt = b"\xc0" + struct.pack(">I", 0x1a2a3a4a) \
+        + bytes([len(dcid)]) + dcid + bytes([len(scid)]) + scid + b"\x00"
+    pkt += b"\x00" * (1200 - len(pkt))
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(3)
+    try:
+        s.sendto(pkt, (host, port))
+        data, _ = s.recvfrom(2048)
+    except Exception:
+        return False
+    finally:
+        s.close()
+    # 版本协商包：long header 标志位 + version 字段全 0
+    return len(data) >= 5 and bool(data[0] & 0x80) and data[1:5] == b"\x00\x00\x00\x00"
+
+sys.exit(0 if any(probe(h, p) for h, p in TARGETS) else 1)
+PY
+}
+
+# 取「从国内直连出去」的公网 IP，输出 `<ip>|<一句话归属>`。全挂才返回 1。
+# cip.cc 一家抽风不该让整步没有结论，所以配两个备胎逐个试；三家的输出格式各不
+# 相同，统一用正则抽第一个 IPv4。
+_sb_fetch_cn_ip() {
+  local u body ip
+  for u in https://cip.cc https://myip.ipip.net http://ip.3322.net; do
+    body=$(curl -s --max-time 8 "$u" 2>/dev/null)
+    ip=$(printf '%s' "$body" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -1)
+    if [ -n "$ip" ]; then
+      printf '%s|%s' "$ip" "$(printf '%s' "$body" | tr '\n' ' ' | sed 's/  */ /g' | cut -c1-90)"
+      return 0
+    fi
+  done
+  return 1
+}
+
 cmd_verify() {
   require_installed
   VERIFY_BAD=0
+  VERIFY_POLICY_BAD=0
   running || { bad "服务未运行 —— 先 $(basename "$0") start"; return 1; }
   local s; s=$(sock_addr)
 
@@ -1021,12 +1130,23 @@ cmd_verify() {
   fi
 
   step "2/5  出口 IP 分流"
-  local ip_main ip_soc org
+  local ip_main ip_soc org i
   ip_main=$(curl -s --max-time 12 https://api.ipify.org 2>/dev/null)
-  local soc_json; soc_json=$(curl -s --max-time 15 https://ipinfo.io/json 2>/dev/null)
-  ip_soc=$(printf '%s' "$soc_json" | python3 -c 'import sys,json
+  # ipinfo.io 不换域名——它被写死在配置的 vpsre 社交组里，是分流判定的固定参照物，
+  # 换端点等于改配置。抽风就同一个端点多试两次。
+  # ⚠️ 跳出条件必须看**解析出来的 ip_soc**，不能看响应体非空。限流页、502、
+  # Cloudflare 拦截页都是「非空但不是 JSON」，`curl -s` 照样退 0 —— 拿响应体当
+  # 判据就会只试 1 次就落到下面的硬失败，还打一句「连取 3 次」的假话。
+  local soc_json=""
+  ip_soc=""
+  for i in 1 2 3; do
+    soc_json=$(curl -s --max-time 15 https://ipinfo.io/json 2>/dev/null)
+    ip_soc=$(printf '%s' "$soc_json" | python3 -c 'import sys,json
 try: print(json.load(sys.stdin).get("ip",""))
 except Exception: print("")' 2>/dev/null)
+    [ -n "$ip_soc" ] && break
+    [ "$i" = 3 ] || sleep 2
+  done
   org=$(printf '%s' "$soc_json" | python3 -c 'import sys,json
 try: print(json.load(sys.stdin).get("org",""))
 except Exception: print("")' 2>/dev/null)
@@ -1035,7 +1155,9 @@ except Exception: print("")' 2>/dev/null)
   if [ -z "$ip_main" ]; then
     vbad "兜底取不到 IP —— 跑 status 看 TUN 是否接管"
   elif [ -z "$ip_soc" ]; then
-    warn "ipinfo.io 取不到，跳过分流判断"
+    # 连试 3 次还是空，就不能再当软告警放过去——「分流没生效」和「参照物挂了」
+    # 得有个结论。计策略档：第三方站点可用性不是内核问题，回滚换不回来。
+    vpbad "ipinfo.io 连取 3 次都没结果 —— 分流判断做不了，这一步没有结论"
   elif [ "$ip_main" = "$ip_soc" ]; then
     vbad "两个出口相同 —— 服务端按 UUID 分流未生效，或 vpsre 中转链路断了"
     info "这是服务端问题，客户端配置改不了"
@@ -1046,40 +1168,69 @@ except Exception: print("")' 2>/dev/null)
   fi
 
   step "3/5  DNS 防泄漏"
-  if command -v dig >/dev/null 2>&1; then
-    local g; g=$(dig +short +time=3 +tries=1 www.google.com 2>/dev/null | grep -E '^[0-9]' | head -3 | tr '\n' ' ')
-    info "google.com → ${g:-无结果}"
+  local g
+  if g=$(_sb_resolve_a www.google.com); then
+    g=$(printf '%s' "$g" | tr '\n' ' ')
+    info "google.com → ${g}"
     case "$g" in
-      157.240.*|31.13.*|"") vbad "解析结果异常（疑似污染）—— 跑 syscheck 看系统 DNS 是不是内网地址" ;;
+      157.240.*|31.13.*) vpbad "解析结果异常（疑似污染）—— 跑 syscheck 看系统 DNS 是不是内网地址" ;;
       *) ok "解析正常" ;;
     esac
   else
-    dim "未装 dig，跳过（brew install bind）"
+    vpbad "dig / host / dscacheutil / python3 四级都拿不到 A 记录 —— 本机没有可用解析手段"
+    info "解析结果没有可疑之处可言 —— 是解析这件事本身做不了；先确认能上网，再看 syscheck"
   fi
   dim "浏览器验证：dnsleaktest.com 的 Extended Test 不应出现本地运营商"
 
   step "4/5  IPv6 与 QUIC"
   local v6; v6=$(ifconfig 2>/dev/null | grep inet6 | grep -v 'fe80::' | grep -v '::1 ')
   [ -z "$v6" ] && ok "无全局 IPv6" || vbad "存在全局 IPv6 —— 跑 syscheck"
-  if curl --http3 -V >/dev/null 2>&1 || curl -V 2>/dev/null | grep -q HTTP3; then
-    local hv; hv=$(curl -s --max-time 8 -o /dev/null -w '%{http_version}' --http3 https://cloudflare-quic.com/ 2>/dev/null)
-    [ "$hv" = "3" ] && warn "HTTP/3 仍可用 —— 检查禁 QUIC 规则（udp + 443 + reject）" || ok "QUIC 已阻断"
+  if _sb_quic_open; then
+    vpbad "QUIC 未被阻断 —— 对端回了版本协商包，UDP/443 出得去"
+    info "检查禁 QUIC 规则（udp + 443 + reject）是否在规则表里、是否排在放行规则之前"
   else
-    dim "本机 curl 不支持 http3，跳过；可用浏览器访问 cloudflare-quic.com 验证"
+    ok "QUIC 已阻断"
   fi
 
   step "5/5  国内直连与局域网"
-  local cn; cn=$(curl -s --max-time 12 https://cip.cc 2>/dev/null | head -4 | tr '\n' ' ')
-  info "cip.cc → ${cn:-取不到}"
+  local cn cn_ip cn_desc
+  if cn=$(_sb_fetch_cn_ip); then
+    cn_ip="${cn%%|*}"; cn_desc="${cn#*|}"
+    info "国内直连出口：${cn_ip}  ${cn_desc}"
+    # 国内出口等于第 1 步的 SOCKS 出口 = 国内流量全被代理接走了，直连规则没生效。
+    # 只跟 SOCKS 出口比，不跟兜底/社交出口比：那两个的故障形态另有判据。
+    if [ "$cn_ip" = "$ip_socks" ]; then
+      vpbad "国内直连出口与 SOCKS 出口相同（${cn_ip}）—— 国内流量全走了代理"
+      info "检查 geosite-cn / geoip-cn 规则是否排在兜底出站之前"
+    else
+      ok "国内直连生效，出口与代理出口不同"
+    fi
+  else
+    vpbad "cip.cc 与两个备胎都取不到国内出口 IP —— 这一步没有结论"
+  fi
   local gw; gw=$(netstat -rn -f inet 2>/dev/null | awk '/^default/ && $6!~/utun/ {print $2; exit}')
-  if [ -n "$gw" ]; then
-    ping -c1 -W1500 "$gw" >/dev/null 2>&1 && ok "局域网网关 $gw 可达" \
-      || warn "网关不可达 —— 检查私有网段规则是否排在最前"
+  if [ -z "$gw" ]; then
+    vpbad "取不到默认网关 —— 局域网可达性无从判断"
+    info "跑 status 看路由表；TUN 抢走了默认路由而没留物理网关，局域网设备会全部失联"
+  else
+    # 连试 3 次才判失败：无线抖一下丢一个包，不该把一次好端端的升级判成坏的。
+    local p ping_ok=0
+    for p in 1 2 3; do
+      if ping -c1 -W1500 "$gw" >/dev/null 2>&1; then ping_ok=1; break; fi
+    done
+    if [ "$ping_ok" = 1 ]; then
+      ok "局域网网关 $gw 可达"
+    else
+      vpbad "网关 $gw 连试 3 次都不通 —— 检查私有网段规则是否排在最前"
+    fi
   fi
 
-  # 退出码要如实反映五步的结果。原先只有第 1 步会 return 1，后面几步打了 ✗
-  # 也照样返回 0——升级的验收阶段拿这个当判据，就会把坏掉的升级判成成功。
-  [ "$VERIFY_BAD" = 0 ]
+  # 退出码要如实反映五步的结果，并且要能分辨「回滚有用」和「回滚白搭」：
+  #   0 全过 / 1 链路档失败（该回滚）/ 2 仅策略档失败（不该回滚）
+  # 两档都失败时报 1，链路优先——链路都断了，策略上的结论没有参考价值。
+  [ "$VERIFY_BAD" -gt 0 ] && return 1
+  [ "$VERIFY_POLICY_BAD" -gt 0 ] && return 2
+  return 0
 }
 
 #=======================================================================
@@ -1570,18 +1721,29 @@ _sb_warn_deprecated() {
   grep -i deprecated "$1" | sed 's/^/        /' >&2
 }
 
-# 阶段 3 的验收：cmd_verify 五步，任一步打 ✗ 都算硬失败。失败则隔几秒再来一轮——
-# 第 2/3/4/5 步依赖 ipinfo.io / dig / cloudflare-quic.com / cip.cc，一次网络抖动
-# 不该把一次本来成功的升级回滚掉。
+# 阶段 3 的验收。读 cmd_verify 的退出码，不是读布尔值——两者的差别就是这次升级
+# 要不要被回滚：
+#
+#   0  全过，通过
+#   2  只有策略档失败（DNS / QUIC / 国内直连）。这些是路由策略问题，换回旧内核一个
+#      都修不好，回滚只会把一次本来成功的升级白白撤掉。打条 warn 放行。
+#   1  链路档失败。隔几秒再来一轮——第 2/3/5 步依赖 ipinfo.io / cip.cc 这些第三方
+#      站点，一次网络抖动不该触发回滚；两轮都败才算数。
 _sb_verify_rounds() {
-  local i
+  local i rc
   for i in 1 2; do
     if [ "$i" = 2 ]; then
       warn "第 1 轮验收未通过，${VERIFY_RETRY_WAIT}s 后重试一轮"
       sleep "$VERIFY_RETRY_WAIT"
     fi
     info "验收第 ${i}/2 轮"
-    cmd_verify && return 0
+    cmd_verify; rc=$?
+    [ "$rc" = 0 ] && return 0
+    if [ "$rc" = 2 ]; then
+      warn "验收只有策略档失败 —— 那是路由策略/环境问题，回滚旧内核换不回来，放行"
+      info "新内核保留在位；上面打 ✗ 的几步要自己查配置，跑 rules 与 debug"
+      return 0
+    fi
   done
   return 1
 }
@@ -1986,6 +2148,8 @@ singbox.sh v$VERSION —— sing-box on macOS 全生命周期管理
 
 检查
   verify              完整验证清单（节点/出口 IP/DNS/IPv6/QUIC/国内直连）
+                      退出码 0 全过；1 链路档失败（节点/出口 IP，换内核可能修好）；
+                      2 仅策略档失败（DNS/QUIC/国内直连，回滚换不回来）
   syscheck            系统层复查（换网络、换硬件后跑）
   rules               验证规则集 URL 可达
   debug               debug 前台跑，看每条连接落在哪个出站
@@ -1995,6 +2159,8 @@ singbox.sh v$VERSION —— sing-box on macOS 全生命周期管理
   update              升级内核：预检 → 沙箱验证 → 升级 → 验收
                       沙箱阶段用临时前缀实跑新内核，现网服务不受影响；
                       任一阶段失败自动回滚。跨 minor 会额外确认一次
+                      验收只认 verify 的链路档（退出 1）才回滚；策略档（退出 2）
+                      打条 warn 放行 —— 回滚旧内核修不了路由策略
   rollback            换回上一个内核（update 成功后保留的 .prev）并重新验收
   mirror <sub>        test | set <url> | show | reset —— GitHub 下载镜像
   uninstall           卸载

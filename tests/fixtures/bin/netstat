@@ -4,11 +4,12 @@
 #   SB_FAKE_NO_TUN=1        整张表里没有 utun
 #   SB_FAKE_TUN_HOST_ONLY=1 只有那条 UH 主机路由，没有 default/0/1/128.0/1
 #                           指向 utun——接口在、流量却没进来
+#   SB_FAKE_NO_GW=1         整张表里没有默认网关那行（verify 第 5 步的硬失败）
 echo "Routing tables"
 echo
 echo "Internet:"
 echo "Destination        Gateway            Flags        Netif Expire"
-echo "default            192.168.71.1       UGScg          en0"
+[ "${SB_FAKE_NO_GW:-}" != 1 ] && echo "default            192.168.71.1       UGScg          en0"
 if [ "${SB_FAKE_NO_TUN:-}" != 1 ]; then
   [ "${SB_FAKE_TUN_HOST_ONLY:-}" != 1 ] && echo "128.0/1            172.18.0.1         UGSc      utun9527"
   echo "172.18.0.1         172.18.0.1         UH        utun9527"

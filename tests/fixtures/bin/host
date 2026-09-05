@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# 假 host。_sb_resolve_a 的第 2 级——dig 废了之后就靠它，所以它必须能独立成功。
+#   SB_FAKE_HOST_FAIL=1  解析失败
+#   SB_FAKE_HOST_IP=<ip> 改写返回的 A 记录
+[ "${SB_FAKE_HOST_FAIL:-}" = 1 ] && {
+  echo "Host www.google.com not found: 3(NXDOMAIN)"; exit 1; }
+echo "www.google.com has address ${SB_FAKE_HOST_IP:-142.250.196.132}"
+exit 0

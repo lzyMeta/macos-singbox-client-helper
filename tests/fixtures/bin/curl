@@ -11,6 +11,11 @@
 #   SB_FAKE_PROBE_FAIL=1             所有 URL 探测不通（模拟断网）
 #   SB_FAKE_SANDBOX_SOCKS_FAIL=1     阶段 1 沙箱建链失败
 #   SB_FAKE_VERIFY_FAIL=all|first    cmd_verify 第 1 步失败（first 只败第一轮）
+#   SB_FAKE_IPINFO_FAIL=1            ipinfo.io 一直取不到（第 2 步重试 3 次仍空）
+#   SB_FAKE_IPINFO_JUNK=1            ipinfo.io 回一个非空但不是 JSON 的页面（限流页 / 502）
+#   SB_FAKE_CN_FAIL=cip|all          cip.cc 挂掉 / 连两个备胎一起挂
+#   SB_FAKE_CN_IP=<ip>               国内直连出口报成这个 IP（设成 1.2.3.4 即等于
+#                                    SOCKS 出口，用来驱动「国内直连失效」的硬失败）
 #
 S="${SB_FAKE_STATE:?SB_FAKE_STATE 未设置}"
 
@@ -68,11 +73,21 @@ case "$url" in
     [ -n "$out" ] || exit 22
     cp "$SB_FAKE_TARBALL" "$out" ;;
   *api.ipify.org*)   _emit "5.6.7.8" ;;
-  *ipinfo.io*)       _emit '{"ip":"1.2.3.4","org":"AS12345 Residential Broadband"}' ;;
+  *ipinfo.io*)       n=$(( $(cat "$S/ipinfo_calls" 2>/dev/null || echo 0) + 1 ))
+                     echo "$n" > "$S/ipinfo_calls"
+                     [ "${SB_FAKE_IPINFO_FAIL:-}" = 1 ] && exit 7
+                     [ "${SB_FAKE_IPINFO_JUNK:-}" = 1 ] && {
+                       _emit "<html><head><title>502 Bad Gateway</title></head></html>"; exit 0; }
+                     _emit '{"ip":"1.2.3.4","org":"AS12345 Residential Broadband"}' ;;
   *cloudflare-quic*) _emit "2" ;;
-  *cip.cc*)          _emit "IP  : 5.6.7.8
+  *cip.cc*)          case "${SB_FAKE_CN_FAIL:-}" in cip|all) exit 7 ;; esac
+                     _emit "IP  : ${SB_FAKE_CN_IP:-5.6.7.8}
 地址 : 中国  上海
 运营商 : 电信" ;;
+  *myip.ipip.net*)   [ "${SB_FAKE_CN_FAIL:-}" = all ] && exit 7
+                     _emit "当前 IP：${SB_FAKE_CN_IP:-5.6.7.8}  来自于：中国 上海 电信" ;;
+  *ip.3322.net*)     [ "${SB_FAKE_CN_FAIL:-}" = all ] && exit 7
+                     _emit "${SB_FAKE_CN_IP:-5.6.7.8}" ;;
   *) _emit "" ;;
 esac
 exit 0
