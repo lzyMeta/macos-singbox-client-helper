@@ -146,7 +146,7 @@ singbox install [--config <path>] [--version <v>] [--arch <amd64|arm64>] [--forc
 |---|---|
 | `--config` | 配置文件。不给则依次找 `./config.json`、`./config.json`、`~/singbox/config.json` |
 | `--version` | 内核版本。不给则查 GitHub 取最新 |
-| `--arch` | Apple Silicon 用 `arm64`。默认按 `uname -m` 判断 |
+| `--arch` | `amd64` \| `arm64`，取值会当场校验。默认按**硬件**判断（`hw.optional.arm64`），不是按 `uname -m` |
 | `--force` | 已安装时不询问，直接重装内核 |
 
 ### 七个步骤
@@ -444,7 +444,11 @@ singbox config restore <备份路径>
 
 ⚠️ **沙箱验不到 TUN 与系统路由相关的回归**——派生配置把 `tun` 删了。这类问题只能在阶段 2/3 暴露，靠回滚兜底。这是「不停现网」换来的，是自觉的取舍。
 
-**完整性校验做到哪一步。** 上游 release 的资产列表里**不提供 checksum 文件**（没有 `checksums.txt`、`.sha256`、`SHA256SUMS`），所以只能验到「解压出来能跑，且 `Environment:` 自报的架构与本机一致」。脚本会在输出里明说这一点，不装作做过 sha256。
+**完整性校验做到哪一步。** 上游 release 的资产列表里确实**没有 checksum 文件**（没有 `checksums.txt`、`.sha256`、`SHA256SUMS`），但 GitHub Releases API 的每个 asset 带 `digest` 字段（`sha256:<hex>`），校验值从那里取。下载完当场比对，对不上就删文件并终止；取不到（老 release 无该字段、或 API 不可达）就打一条 warn 后放行，不装作校验过。
+
+⚠️ 这道校验能挡的是**传输损坏**与**单个镜像投毒**。API 本身也可能是经镜像拿到的——那种情况下 digest 的可信度不高于那个镜像，挡不住「API 与文件出自同一个坏镜像」。它不是签名。
+
+架构那一步仍然照验：sha256 只能证明「文件没被改」，不能证明「下对了平台」。
 
 **废弃字段告警照打照记，但一个字都不自动改。** 「哪些字段该改成什么写法」需要读 release notes 和上游文档，那是另一件事。
 
@@ -596,7 +600,15 @@ SOCKS 不通说明问题在节点本身，与 TUN、路由规则无关。逐字�
 `--prefix ~/singbox-local`。注意 plist 里的路径会跟着变，卸载重装时前缀要一致。
 
 **Q：Apple Silicon 能用吗**
-能。脚本按 `uname -m` 自动判断，也可 `--arch arm64` 显式指定。
+能，自动判断，不需要手动指定。
+
+判据是硬件（`sysctl -n hw.optional.arm64`），**不是 `uname -m`**。
+`uname -m` 报的是当前**进程**的架构：在 Rosetta 方式打开的终端、x86_64 的 Homebrew bash、
+或 `arch -x86_64 bash` 里，它会说 `x86_64`。早先按它判断，会在 ARM 机器上装 Intel 内核——
+一个常驻的网络路径守护进程被塞进翻译层，而且 `update` 走同一个函数，会把这个错误一直续下去。
+
+检测到当前 shell 被翻译时，`install` 会明说，并提示用 `arch -arm64 zsh` 开一个原生 shell。
+要覆盖自动判断仍可用 `--arch`。
 
 **Q：`update` 说 GitHub 与所有镜像均不可达**
 先 `singbox mirror test` 看是哪一层的问题。代理能跑的话先 `start` 让它工作，直连往往就通了。内置镜像全挂就用 `SB_MIRRORS` 指定自己的，或按 `mirror` 一节手动下载内核。

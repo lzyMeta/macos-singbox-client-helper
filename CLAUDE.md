@@ -32,6 +32,9 @@ Stop 闸门开着（`check.stopHook = "on-edit"`）：改完代码要停下时�
 - 目标是 macOS 自带的 **bash 3.2.57**，不是 bash 4+：没有 `declare -A`、`${x^^}`、`mapfile`。
 - 工具链是 **BSD 不是 GNU**：没有 `sed -i `（带空格）、`readlink -f`、`date -d`、`head -n -N`、`grep -oP`。
 - bash 3.2 解析 `$VAR中文` 会出错，变量后紧跟全角字符必须写 `${VAR}中文`。
+- **判 CPU 架构不能用 `uname -m`**：它报的是当前进程的架构，Rosetta 翻译下会说 `x86_64`。
+  硬件判据是 `sysctl -n hw.optional.arm64`（Intel 上这个键不存在，sysctl 退出 1）；
+  `sysctl -n sysctl.proc_translated` = 1 表示当前 shell 正被翻译。
 - `shift 2` 在参数不够时**返回 1 且不消耗任何参数**，`while [ $# -gt 0 ]` 的解析循环会死转。
   每个 `shift 2` 之前都要 `[ -n "${2:-}" ] || die`。
 - 同一条 `local` 里引用不到前面刚声明的变量：`local a=x b="$a"` 里 `$a` 取的是外层作用域，

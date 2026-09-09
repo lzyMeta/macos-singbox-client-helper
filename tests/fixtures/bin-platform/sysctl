@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# 假 sysctl，只认脚本用到的那两个键。行为照抄真机实测：
+#   真 Intel        两个键都不存在，sysctl 退出 1
+#   Apple Silicon   hw.optional.arm64=1；sysctl.proc_translated 存在，原生时为 0
+#   Rosetta 翻译中  同上，但 sysctl.proc_translated=1
+#
+#   SB_FAKE_ARM64=1        让 hw.optional.arm64 存在并返回 1
+#   SB_FAKE_TRANSLATED=0|1 让 sysctl.proc_translated 存在并返回该值；不设则视为不存在
+key=""
+while [ $# -gt 0 ]; do
+  case "$1" in -n) shift ;; *) key="$1"; shift ;; esac
+done
+case "$key" in
+  hw.optional.arm64)
+    [ "${SB_FAKE_ARM64:-0}" = 1 ] || { echo "sysctl: unknown oid '$key'" >&2; exit 1; }
+    echo 1 ;;
+  sysctl.proc_translated)
+    [ -n "${SB_FAKE_TRANSLATED:-}" ] || { echo "sysctl: unknown oid '$key'" >&2; exit 1; }
+    echo "${SB_FAKE_TRANSLATED}" ;;
+  *) echo "sysctl: unknown oid '$key'" >&2; exit 1 ;;
+esac

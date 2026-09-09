@@ -216,8 +216,22 @@ ask() {
 #=======================================================================
 # 前置检查
 #=======================================================================
+# 只跑在 macOS 上。这不是「还没适配」，是产品边界：服务管理靠 launchd（launchctl +
+# LaunchDaemon plist）、网络与 DNS 靠 networksetup / scutil / dscacheutil、
+# 配置校验靠 plutil —— 这些在 Windows 与 Linux 上一个都不存在，换平台等于另写一个程序。
+# 所以这里只求拒绝得清楚：点名当前系统，说明缺的是什么。
 check_platform() {
-  [ "$(uname -s)" = Darwin ] || die "本脚本仅适用于 macOS"
+  local sys; sys=$(uname -s 2>/dev/null)
+  [ "$sys" = Darwin ] && return 0
+  bad "本脚本只支持 macOS，当前系统是 ${sys:-未知}"
+  case "$sys" in
+    Linux)      info "WSL 与 Linux 上没有 launchd / networksetup —— 用 systemd 单元自己起 sing-box" ;;
+    MINGW*|MSYS*|CYGWIN*)
+                info "Windows 上没有 launchd / networksetup —— 用 sing-box 官方的 Windows 版与服务安装方式" ;;
+    *)          info "服务管理依赖 launchd，网络与 DNS 依赖 networksetup / scutil，本平台都没有" ;;
+  esac
+  info "内核本身是跨平台的，跨不过去的是这套系统层集成：$GH_RELEASES"
+  exit 1
 }
 
 check_deps() {
@@ -235,13 +249,33 @@ require_installed() {
   [ -f "$CFG" ] || die "未找到配置 $CFG —— 先运行：$(basename "$0") install"
 }
 
+# 当前 shell 是否跑在 Rosetta 2 的翻译层里。
+# 真机实测的键语义：Intel 上 sysctl.proc_translated **不存在**（sysctl 退出 1）；
+# Apple Silicon 上它存在，原生为 0、被翻译时为 1。
+is_translated() { [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = 1 ]; }
+
+# 硬件是不是 Apple Silicon。hw.optional.arm64 在 Intel 上同样不存在。
+is_apple_silicon() { [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = 1 ]; }
+
+# 该装哪个架构的内核。
+#
+# ⚠️ 不能只看 `uname -m`：它报的是**当前进程**的架构，不是硬件的。
+# Apple Silicon 上被 Rosetta 翻译的 shell 里（Rosetta 方式打开的终端、x86_64 的
+# Homebrew bash、arch -x86_64 bash……）它会说 x86_64，于是我们会在 ARM 机器上装
+# Intel 内核——一个常驻的网络路径守护进程被塞进翻译层，而且 cmd_update 走同一个
+# 函数，会把这个错误一直续下去。硬件判据只有 hw.optional.arm64 一条。
 detect_arch() {
+  is_apple_silicon && { echo arm64; return 0; }
   case "$(uname -m)" in
     arm64)  echo arm64 ;;
     x86_64) echo amd64 ;;
     *)      echo "" ;;
   esac
 }
+
+# 合法的架构取值。放在这里是为了让 install --arch 能在动手之前就否掉错的，
+# 而不是一路拼出 sing-box-<版本>-darwin-foo.tar.gz 再靠 404 失败。
+arch_valid() { case "${1:-}" in amd64|arm64) return 0 ;; *) return 1 ;; esac; }
 
 running() { pgrep -x sing-box >/dev/null 2>&1; }
 daemon_loaded() { sudo launchctl print "$LABEL" >/dev/null 2>&1; }
@@ -714,7 +748,8 @@ cmd_install() {
     case "$1" in
       --config)  src_cfg="${2:-}"; [ -n "$src_cfg" ] || die "--config 需要参数，如 --config ./config.json"; shift 2 ;;
       --version) want_ver="${2:-}"; [ -n "$want_ver" ] || die "--version 需要参数，如 --version 1.14.0"; shift 2 ;;
-      --arch)    arch="${2:-}";    [ -n "$arch" ]    || die "--arch 需要参数：amd64 | arm64"; shift 2 ;;
+      --arch)    arch="${2:-}";    [ -n "$arch" ]    || die "--arch 需要参数：amd64 | arm64"
+                 arch_valid "$arch" || die "--arch 取值无效：${arch}（只接受 amd64 | arm64）"; shift 2 ;;
       --force)   force=1; shift ;;
       *) die "install: 未知参数 $1" ;;
     esac
@@ -728,8 +763,14 @@ cmd_install() {
   local host_arch; host_arch=$(detect_arch)
   [ -n "$host_arch" ] || die "不支持的 CPU 架构：$(uname -m)"
   [ -n "$arch" ] || arch="$host_arch"
-  [ "$arch" = "$host_arch" ] || warn "指定架构 $arch 与本机 $host_arch 不符"
-  info "架构：$(uname -m) → darwin-$arch"
+  [ "$arch" = "$host_arch" ] || warn "指定架构 $arch 与本机硬件 $host_arch 不符"
+  # 被 Rosetta 翻译时 uname -m 会说 x86_64，而我们按硬件选了 arm64 —— 这两个数
+  # 对不上是正常的，但必须说出来，否则用户没法判断这台机器到底装了什么。
+  if is_translated; then
+    warn "当前 shell 跑在 Rosetta 2 翻译层里（uname -m 报 $(uname -m)，实际硬件是 ${host_arch}）"
+    info "按硬件装 darwin-${host_arch}；要原生 shell 的话：arch -arm64 zsh"
+  fi
+  info "架构：硬件 ${host_arch} → darwin-$arch"
   info "安装前缀：$PREFIX"
 
   # 配置的静态检查提前到这里：别等下载完内核才发现占位符没替换

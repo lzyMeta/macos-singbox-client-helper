@@ -50,7 +50,8 @@ App → utun 虚拟网卡 → 嗅探（还原域名）→ DNS 劫持 → 路由�
 
 ### 适用环境
 
-- macOS（在 Intel 机型上开发与验证；Apple Silicon 加 `--arch arm64`）
+- macOS，Intel 与 Apple Silicon 都可以（架构自动判断，按硬件而非 `uname -m`，所以 Rosetta 下的 shell 也不会选错）
+- **只有 macOS。** Windows 与 Linux 不在支持范围，也不打算支持：服务管理靠 launchd、网络与 DNS 靠 `networksetup` / `scutil`、配置校验靠 `plutil`，换平台等于另写一个程序。在非 macOS 上运行会点名当前系统并说明缺什么，然后退出
 - sing-box **1.12 / 1.13 / 1.14**（1.11 及更早的 DNS 格式不同，配置不兼容）
 - 本机代理场景，非软路由
 

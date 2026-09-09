@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# 假 uname。用来伪造「这台机器是什么」。
+#   SB_FAKE_UNAME_S=<系统>   uname -s 的输出，默认 Darwin
+#   SB_FAKE_UNAME_M=<架构>   uname -m 的输出，默认 x86_64
+#
+# ⚠️ uname -m 报的是**当前进程**的架构，不是硬件的。Apple Silicon 上被 Rosetta
+# 翻译的进程里它会说 x86_64——这正是要复现的那件事。
+case "${1:-}" in
+  -m) printf '%s\n' "${SB_FAKE_UNAME_M:-x86_64}" ;;
+  -s) printf '%s\n' "${SB_FAKE_UNAME_S:-Darwin}" ;;
+  *)  printf '%s\n' "${SB_FAKE_UNAME_S:-Darwin}" ;;
+esac
