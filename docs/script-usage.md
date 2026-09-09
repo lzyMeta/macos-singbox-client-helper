@@ -109,7 +109,7 @@ singbox <命令> [参数]
 | 运行 | `status` | 服务、TUN 路由、监听端口 |
 | | `start` / `stop` / `restart` | 本次开机内的启停，停服可连带还原 DNS |
 | | `enable` / `disable` | 开机自启开关（跨重启） |
-| | `logs [n\|-f]` | 看日志 |
+| | `logs [n\|-f\|size\|truncate]` | 看日志、看体积、原地回收空间 |
 | 检查 | `verify` | 完整验证清单 |
 | | `syscheck` | 系统层复查 |
 | | `rules` | 验证规则集 URL |
@@ -261,10 +261,32 @@ singbox dns set 223.5.5.5   # 设为指定地址
 ### `logs`
 
 ```bash
-singbox logs        # 后 50 行
+singbox logs           # 先报体积，再打后 50 行
 singbox logs 200
-singbox logs -f     # 跟随
+singbox logs -f        # 跟随
+singbox logs size      # 只看体积
+singbox logs truncate  # 原地清空，回收空间
 ```
+
+**launchd 不做日志轮转。** plist 把 stdout/stderr 直接指向
+`/var/log/sing-box.log` 与 `/var/log/sing-box.err`，launchd 只管往里写——
+不轮转、不封顶。实测能涨到几百 MB，而在此之前没有任何命令提过一句。
+现在 `status` 与 `doctor` 超过阈值（默认 64 MB，`SB_LOG_WARN_MB` 可改）会点名并指向回收命令。
+
+**为什么回收是「原地截断」而不是轮转。**
+`StandardErrorPath` 那个 fd 是 launchd 打开、`dup2` 到子进程 fd 2 上的。
+一旦换了 inode（`mv`、`rm` 后重建、或任何 rename 式轮转），守护进程会一直往那个
+已经没有名字的旧文件里写：磁盘一点收不回来，而且从此再也看不到新日志。
+`logs truncate` 用的是 `: > 文件`，inode 不变，所以服务不受影响、不用重启。
+
+**为什么不配 newsyslog。**
+macOS 的 `newsyslog` 只会 rename + 新建，没有原地截断的选项
+（`man newsyslog.conf` 的 flags 里 `B/C/D/G/J/N/U/Z` 没有一个是截断）。
+给这份 plist 配上去，等于装了一个看着在管日志、实际让守护进程往已归档文件里写的东西——
+比不装更糟。所以这里不装，代价是回收要手动跑一次 `logs truncate`。
+
+> 日志目录可用 `SB_LOGDIR` 覆盖（默认 `/var/log`）。它在 `install` 时会被烧进 plist，
+> 所以改了要重新 `install` 才生效。
 
 ---
 

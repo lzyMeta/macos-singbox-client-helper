@@ -13,7 +13,7 @@
 #   start | stop | restart
 #   enable | disable
 #   dns        系统 DNS：status / dhcp / backup / proxy / set <地址>
-#   logs [n|-f]
+#   logs       [n|-f|size|truncate] 看日志、看体积、原地回收空间
 #   debug      debug 前台跑，看分流命中
 #   edit       改配置（校验 + 备份 + 重启）
 #   config     配置子命令：show / backup / list / diff / restore
@@ -46,13 +46,20 @@ ETC="$PREFIX/etc/sing-box"
 CFG="$ETC/config.json"
 PLIST=/Library/LaunchDaemons/sing-box.plist
 LABEL=system/sing-box
-LOGFILE=/var/log/sing-box.log
-ERRFILE=/var/log/sing-box.err
+# 日志目录。默认 /var/log，与 plist 里写死的绝对路径一致。
+# 做成可覆盖不只是为了测试：路径写死正是「日志涨到几百 MB 也没有任何测试能发现」
+# 的直接原因。install 时的取值会被烧进 plist，所以改了它就得重装服务。
+LOGDIR="${SB_LOGDIR:-/var/log}"
+LOGFILE="$LOGDIR/sing-box.log"
+ERRFILE="$LOGDIR/sing-box.err"
 LOCKDIR=/tmp/.singbox-sh.lock
 PREFS_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/singbox"
 PREFS="$PREFS_DIR/prefs"
 DNS_BACKUP="$PREFS_DIR/dns-backup"
 PROXY_DNS=1.1.1.1
+# 日志体积告警阈值（MB）。launchd 把 stdout/stderr 直接怼进文件，只涨不落；
+# 超过这个数 status 与 doctor 就点名，并指向 logs truncate。
+LOG_WARN_MB="${SB_LOG_WARN_MB:-64}"
 DEFAULT_EDITOR=vi
 GH_API=https://api.github.com/repos/SagerNet/sing-box/releases/latest
 GH_API_REPO=https://api.github.com/repos/SagerNet/sing-box
@@ -291,6 +298,43 @@ human_size() {
   if [ "$b" -ge 1048576 ] 2>/dev/null; then printf '%d.%d MB' $((b/1048576)) $(((b%1048576)*10/1048576))
   elif [ "$b" -ge 1024 ] 2>/dev/null; then printf '%d KB' $((b/1024))
   else printf '%s B' "$b"; fi
+}
+
+#-----------------------------------------------------------------------
+# 日志体积
+#
+# plist 把 stdout/stderr 直接指向文件，launchd 只管往里写，不轮转、不封顶。
+# 实测能涨到几百 MB 而没有任何命令提过一句——「失控」的前提是没人看得见。
+#
+# ⚠️ 回收只能**原地截断**，不能 rename / rm 后重建。
+# StandardErrorPath 那个 fd 是 launchd 打开、dup2 到子进程 fd 2 上的：
+# 换了 inode，守护进程就一直往那个已经没有名字的旧文件里写——磁盘一点收不回来，
+# 而且从此再也看不到新日志。这也是不给它配 newsyslog 的原因：
+# macOS 的 newsyslog 只会 rename + 新建（man newsyslog.conf 的 flags 里
+# B/C/D/G/J/N/U/Z 没有一个是截断），装上去等于装了一个看着在管、实际不工作的东西。
+#-----------------------------------------------------------------------
+# 单个文件的字节数，读不到就是 0
+log_bytes() {
+  [ -f "$1" ] || { printf 0; return 0; }
+  local n; n=$(wc -c < "$1" 2>/dev/null | tr -d ' ')
+  printf '%s' "${n:-0}"
+}
+
+# 两个日志文件的总字节数
+log_total_bytes() {
+  printf '%s' "$(( $(log_bytes "$LOGFILE") + $(log_bytes "$ERRFILE") ))"
+}
+
+# 超过阈值就打一条告警并指路。没超就什么都不说。被 status 与 doctor 共用。
+# 返回 0 = 超了。
+log_size_warn() {
+  local total limit
+  total=$(log_total_bytes)
+  limit=$(( LOG_WARN_MB * 1024 * 1024 ))
+  [ "$total" -gt "$limit" ] || return 1
+  warn "日志占用 $(human_size "$total")（阈值 ${LOG_WARN_MB} MB）—— launchd 不会自己轮转"
+  info "回收：$(basename "$0") logs truncate（原地截断，不重启服务）"
+  return 0
 }
 
 # 带镜像回退的下载：download <目标文件> <github原始URL> [描述]
@@ -1134,6 +1178,13 @@ except Exception: pass" 2>/dev/null)
   else
     dim "（进程未运行）"
   fi
+
+  # 日志体积。这一段不需要 sudo（文件是 0644），所以放在 can_sudo 判断之外。
+  # launchd 把 stdout/stderr 直接怼进文件，只涨不落，涨到几百 MB 也不会自己冒出来。
+  step "日志体积"
+  local ltotal; ltotal=$(log_total_bytes)
+  printf '      %-34s %s\n' "$LOGFILE + $(basename "$ERRFILE")" "$(human_size "$ltotal")"
+  log_size_warn || dim "未超过 ${LOG_WARN_MB} MB 的告警阈值"
 }
 
 #=======================================================================
@@ -1851,12 +1902,85 @@ cmd_disable() {
   _maybe_restore_dns "$restore_dns" "$dns_target"
 }
 
+# logs [n | -f | size | truncate]
+#
+# 默认那一支先报体积再打日志尾巴：这两个文件只涨不落，而在此之前没有任何命令
+# 说过它们有多大。
+#
+# 读日志不再无条件 sudo —— 那两个文件是 0644，普通用户读得了。之前一律 sudo，
+# 结果是没票据时卡在一个看不见的密码提示上（提示被重定向吞掉了）。
 cmd_logs() {
   local a="${1:-50}"
+  case "$a" in
+    truncate) _logs_truncate; return $? ;;
+    size)     _logs_size; return 0 ;;
+  esac
+
   [ -f "$LOGFILE" ] || die "日志文件不存在：${LOGFILE}（服务可能从未启动过）"
-  if [ "$a" = "-f" ]; then sudo tail -f "$LOGFILE"
-  elif [[ "$a" =~ ^[0-9]+$ ]]; then sudo tail -"$a" "$LOGFILE"
-  else die "logs: 参数应为行数或 -f"; fi
+  if [ "$a" = "-f" ]; then
+    _log_cat -f "$LOGFILE"
+  elif [[ "$a" =~ ^[0-9]+$ ]]; then
+    _logs_size
+    echo
+    _log_cat "-$a" "$LOGFILE"
+  else
+    die "logs: 参数应为行数、-f、size 或 truncate"
+  fi
+}
+
+# tail 一个日志文件。读得动就直接读，读不动才抬 sudo。
+_log_cat() {
+  local opt="$1" f="$2"
+  if [ -r "$f" ]; then tail "$opt" "$f"
+  else sudo tail "$opt" "$f"; fi
+}
+
+_logs_size() {
+  step "日志体积"
+  local lo er total
+  lo=$(log_bytes "$LOGFILE"); er=$(log_bytes "$ERRFILE")
+  total=$(( lo + er ))
+  printf '      %-34s %s\n' "$LOGFILE" "$(human_size "$lo")"
+  printf '      %-34s %s\n' "$ERRFILE" "$(human_size "$er")"
+  printf '      %-34s %s\n' "合计" "$(human_size "$total")"
+  log_size_warn || dim "未超过 ${LOG_WARN_MB} MB 的告警阈值"
+}
+
+# 原地截断。inode 必须保持不变 —— 见文件上方 log_bytes 那一段的说明。
+_logs_truncate() {
+  local f before total_before total_after freed
+  total_before=$(log_total_bytes)
+  [ "$total_before" = 0 ] && { ok "日志本来就是空的，无需回收"; return 0; }
+
+  step "回收日志空间"
+  info "当前占用 $(human_size "$total_before")"
+  ask "把 ${LOGFILE} 与 ${ERRFILE} 原地清空？（服务不受影响，不重启）" y || { info "已取消"; return 0; }
+
+  for f in "$LOGFILE" "$ERRFILE"; do
+    [ -f "$f" ] || continue
+    before=$(log_bytes "$f")
+    [ "$before" = 0 ] && continue
+    # `: > 文件` 是原地截断，inode 不变，launchd 那个 fd 继续有效。
+    # 绝不能写成 rm + touch 或 mv —— 换了 inode，守护进程会一直往旧的那个写。
+    if [ -w "$f" ]; then
+      run ": > '$f'"
+    else
+      run "sudo sh -c ': > \"$f\"'"
+    fi
+    info "  $(basename "$f") ← $(human_size "$before")"
+  done
+
+  total_after=$(log_total_bytes)
+  freed=$(( total_before - total_after ))
+  if [ "$DRY" = 1 ]; then
+    dim "[dry-run] 以上均未执行"
+  elif [ "$total_after" -lt "$total_before" ]; then
+    ok "已回收 $(human_size "$freed")，现占用 $(human_size "$total_after")"
+  else
+    bad "截断没有生效，仍占用 $(human_size "$total_after")"
+    return 1
+  fi
+  return 0
 }
 
 #=======================================================================
@@ -2368,6 +2492,8 @@ cmd_doctor() {
   [ -f "$PLIST" ] && { plutil -lint "$PLIST" >/dev/null 2>&1 || _hit "plist 语法错误：删掉后重新 install"; }
   grep -q "IPv6=On" "$out" && { warn "有网络服务的 IPv6 未关：跑 $(basename "$0") sysprep"; DOCTOR_FOUND=1; }
   running || _hit "sing-box 未运行"
+  # 日志体积单列一条判据：launchd 不轮转，它只涨不落，而且不会自己冒出来。
+  log_size_warn && DOCTOR_FOUND=1
   [ "$DOCTOR_FOUND" = 0 ] && ok "未发现已知问题模式"
   local rc=0
   [ "$DOCTOR_FOUND" = 0 ] || rc=1
@@ -2487,7 +2613,11 @@ singbox.sh v$VERSION —— sing-box on macOS 全生命周期管理
                                        --dns dhcp|backup|<地址> | --dns-dhcp
   dns <sub>           status | dhcp | backup | proxy | set <地址>
                       系统 DNS 的查看与切换
-  logs [n|-f]         看日志
+  logs [n|-f|size|truncate]
+                      看日志。默认先报体积再打尾巴；size 只看体积；
+                      truncate 原地清空回收空间（inode 不变，服务不受影响、不用重启）
+                      launchd 不做日志轮转，这两个文件只涨不落 ——
+                      status 与 doctor 超过阈值会点名（默认 64 MB）
 
 检查
   verify              完整验证清单（节点/出口 IP/DNS/IPv6/QUIC/国内直连/局域网）
@@ -2528,6 +2658,8 @@ singbox.sh v$VERSION —— sing-box on macOS 全生命周期管理
 环境变量
   SB_MIRRORS          空格分隔的镜像前缀列表，覆盖内置默认
   SB_PREFIX           同 --prefix
+  SB_LOGDIR           日志目录（默认 /var/log）。install 时的取值会烧进 plist
+  SB_LOG_WARN_MB      日志体积告警阈值，默认 64
   EDITOR              edit 的默认编辑器（--editor 优先）
 
 示例
