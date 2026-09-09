@@ -878,8 +878,18 @@ _self_update() {
   if [ -n "$want_sha" ]; then dim "校验值来自 GitHub API：${want_sha}"
   else warn "取不到 singbox.sh 的 sha256 —— 本次不做完整性校验"; fi
 
-  if ! download "$tmpd/singbox.sh" "$GH_SELF_DL/v${new}/singbox.sh" "脚本 v$new" "$want_sha"; then
-    warn "脚本 v${new} 下载失败，跳过自更新，继续升级内核"
+  # ⚠️ 必须在子 shell 里调 download。它在「直连下来的文件 sha256 对不上」那一档
+  # 走的是 die 而不是 return（见 download 内部 `[ "$i" = 1 ] && die`），
+  # 那个 die 会从这里的 `if !` 底下穿过去，把整条 update 打死在阶段 S ——
+  # 阶段 0-3 一个字节都跑不到，而那正是「脚本更新不该阻断用户真正要的那件事」
+  # 要防的。套一层 ( ) 让 die 只杀子 shell，退出码照常回到这里。
+  #
+  # 子 shell 是安全的：bash 3.2 的 ( ) **不继承 EXIT trap**（实测过），所以
+  # cleanup 不会在子 shell 退出时跑 —— 否则它会把 $tmpd 连同刚下好的文件、
+  # 以及本进程持有的 $LOCKDIR 一起删掉（子 shell 里 $$ 仍是父进程的 PID）。
+  # download 只往 $out 写文件，不往 TMPFILES 里登记东西，没有别的状态要带回来。
+  if ! ( download "$tmpd/singbox.sh" "$GH_SELF_DL/v${new}/singbox.sh" "脚本 v$new" "$want_sha" ); then
+    warn "脚本 v${new} 下载或校验失败，跳过自更新，继续升级内核"
     return 0
   fi
 
@@ -902,9 +912,16 @@ _self_update() {
     warn "启动器原本不在 ${LAUNCHER}，已按当前 --prefix 装入"
 
   # 当前进程是不是就是从 $LAUNCHER 启动的。
-  # ⚠️ 两边都要过一次 cd + pwd 再比：readlink -f 在 macOS 上不存在、也被自检禁了，
-  # 而 /var → /private/var 这类符号链接会让「同一个文件」的两个写法字符串不相等，
-  # 于是本该 re-exec 的场景被静默判成「跑的是仓库副本」。
+  # 两边都过一次 cd + pwd，把 $0 这类相对路径（`./singbox.sh`）绝对化之后再比 ——
+  # 不绝对化的话，从 $LAUNCHER 启动的进程也会因为写法不同而被判成「仓库副本」。
+  #
+  # ⚠️ 这**不解析符号链接**：bash 的 cd 与 pwd 默认都是 -L 逻辑路径，
+  # `cd /var/tmp && pwd` 回的仍是 /var/tmp 而不是 /private/var/tmp。
+  # 所以 $PREFIX/bin 若是一条符号链接，两边字符串仍可能不等，本该 re-exec 的
+  # 场景会退化成「只更新不重启」—— 那是安全的降级（脚本已经换好了，只是这一次
+  # 继续用旧的跑完），不是数据损坏。真要解链接得手写循环读 `ls -l`：
+  # readlink -f 在 macOS 上不存在，也被自检第 4 项禁了，为这个边缘场景不值当。
+  # 默认 --prefix /usr/local 下 /usr/local/bin 不是符号链接，无实际影响。
   local self_dir; self_dir=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
   local self_src="${self_dir:-$(dirname "$0")}/$(basename "$0")"
   local lch_dir; lch_dir=$(cd "$(dirname "$LAUNCHER")" 2>/dev/null && pwd)

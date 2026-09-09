@@ -73,7 +73,7 @@ NEWEOF
 
   export SB_FAKE_SELF_SCRIPT="$ROOT/new-singbox.sh"
   unset SB_FAKE_SELF_LATEST SB_SELF_UPDATED SB_LOCK_INHERIT \
-        SB_FAKE_PROBE_FAIL SB_FAKE_BAD_SHA SB_FAKE_NO_DIGEST
+        SB_FAKE_PROBE_FAIL SB_FAKE_BAD_SHA SB_FAKE_NO_DIGEST SB_FAKE_SELF_BAD_SHA
 }
 
 teardown() {
@@ -204,6 +204,25 @@ if [ "$(sig "$(LAUNCHER)")" = "$(sig "$ROOT/new-singbox.sh")" ] \
   ok "跑的是仓库副本：更新了 \$LAUNCHER，说明了这件事，不 re-exec"
 else
   ng "跑的是仓库副本：期望更新 \$LAUNCHER 且不 exec（退出 ${CODE}）"
+fi
+
+#-- 13. 下载物 sha256 对不上：不替换，且**不阻断内核升级** ---------------
+# ⚠️ 这条是评审补上的缺口。download() 在「直连下来的文件校验失败」那一档走的是
+# die 而不是 return —— 阶段 S 不把它隔离起来的话，整条 update 会退出 1，
+# 阶段 0-3 一个字节都跑不到，而那正是「脚本更新不该阻断用户真正要的那件事」
+# 禁止的。第 8 条只覆盖「取不到远端版本」，覆盖不到这里。
+setup
+export SB_FAKE_SELF_LATEST=9.9.9
+export SB_FAKE_SELF_BAD_SHA=1
+put_launcher
+before=$(sig "$(LAUNCHER)")
+sb_launcher
+if [ "$CODE" = 0 ] && [ "$(sig "$(LAUNCHER)")" = "$before" ] \
+   && [ ! -f "$SB_SELF_MARKER" ] \
+   && grep -q "sha256 不匹配" "$LOG" && grep -q "已是最新" "$LOG"; then
+  ok "下载物 sha256 对不上：不替换，且内核阶段照跑（退出 0）"
+else
+  ng "下载物 sha256 对不上：期望不替换但内核阶段照跑（退出 ${CODE}，到过阶段 0=$(grep -c "阶段 0/3" "$LOG")）"
 fi
 
 echo

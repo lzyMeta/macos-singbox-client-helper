@@ -260,10 +260,15 @@ fixture；`tests/install.test.sh`（验收 1–4）、`selfcheck.test.sh`（15�
    要真正跑完 `install`，得先让 `$PLIST` 可覆盖 —— 那是另一个独立改动。
    为此新增了两个 PATH 桩：`tests/fixtures/bin/networksetup` 与 `scutil`。
 
-2. **判「当前进程是不是从 `$LAUNCHER` 启动的」，两边都要过一次 `cd` + `pwd`。**
-   spec 只说了对 `$0` 这么做。只算一边的话，`/var` → `/private/var` 这类符号链接会让
-   同一个文件的两个写法字符串不相等，于是**本该 re-exec 的场景被静默判成「跑的是仓库
-   副本」**。测试用的 `mktemp -d` 正好落在 `/var/folders`，一写就撞上。
+2. **判「当前进程是不是从 `$LAUNCHER` 启动的」，两边都过一次 `cd` + `pwd`。**
+   spec 只说了对 `$0` 这么做。承重的是把 `$0`（可能是 `./singbox.sh` 这种相对路径）
+   绝对化；两边都做只是为了对称，不额外解决什么。
+   ⚠️ **这不解析符号链接** —— bash 的 `cd` 与 `pwd` 默认都是 `-L` 逻辑路径，
+   `cd /var/tmp && pwd` 回的仍是 `/var/tmp`。所以 `$PREFIX/bin` 若是一条符号链接，
+   本该 re-exec 的场景会退化成「只更新不重启」，那是安全的降级而不是数据损坏。
+   要真解链接得手写循环读 `ls -l`（`readlink -f` 在 macOS 上不存在、也被自检第 4 项
+   禁了），为这个边缘场景不值当。默认 `--prefix /usr/local` 下无实际影响。
+   （这一条的原始记述把机制讲错了，`/sdlc-kit:review` 指出后改正。）
 
 3. **`docs/script-usage.md` 第 1 节也有同一段 `~/bin` 手抄命令**，spec 只点名了
    `README.md` 2.5。同一件事说了两遍，只改一处就会自相矛盾，一并改了。
@@ -286,6 +291,24 @@ fixture；`tests/install.test.sh`（验收 1–4）、`selfcheck.test.sh`（15�
 
 把 `--prefix` 那条 case 分支拆成多行去加 `LAUNCHER=` 之后，`shift 2` 与 `|| die` 护栏
 不再相邻，**自检第 8 项立刻报了出来**。已合回一行，并在那里写明为什么不能拆。
+
+### `/sdlc-kit:review` 抓到的一个真缺陷（已修）
+
+**阶段 S 的 sha256 失配会 `die` 掉整条 `update`。** `download()` 在「直连下来的文件
+校验对不上」那一档走的是 `die` 而不是 `return 1`，那个 `die` 会从 `_self_update` 里
+`if ! download …` 的底下穿过去，整条 `update` 退出 1，**阶段 0–3 一个字节都跑不到** ——
+正是「脚本更新不该有权阻断用户真正要的那件事」禁止的。
+
+修法是把那次调用套进子 shell，让 `die` 只杀子 shell。不改 `download()` 本身：它是
+`install` 与内核升级共用的函数，改它的返回语义会波及内核路径，而 spec 明确划了
+「不改内核升级的三阶段逻辑」。子 shell 安全的前提已实测：bash 3.2 的 `( )` **不继承
+EXIT trap**，否则 `cleanup` 会在子 shell 退出时把 `$tmpd` 连同刚下好的文件、以及本进程
+持有的 `$LOCKDIR` 一起删掉（子 shell 里 `$$` 仍是父进程的 PID）。
+
+原先的验收缺口在于第 8 条只覆盖「取不到远端版本」。补第 13 条：curl 桩新增
+`SB_FAKE_SELF_BAD_SHA=1` 报一个对不上的 digest，断言 `update` 仍退出 0、启动器
+sha256 不变、且日志里同时有「sha256 不匹配」与「已是最新」（后者证明确实走到了内核阶段）。
+修之前这条红在「退出 1，到过阶段 0 = 0 次」。
 
 ### 待定问题的状态
 

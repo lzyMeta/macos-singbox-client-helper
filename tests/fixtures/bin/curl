@@ -27,6 +27,10 @@
 #                                    用来驱动「取不到新版 → warn → 照升内核」
 #   SB_FAKE_SELF_SCRIPT=<路径>       下载 singbox.sh 时吐出的脚本内容；
 #                                    digest 同样由它实算，正常路径天然对得上
+#   SB_FAKE_SELF_BAD_SHA=1           自家 repo 报一个对不上的 digest。
+#                                    ⚠️ 这条驱动的是「直连下来的文件校验失败」——
+#                                    download() 在那一档走的是 die 而不是 return，
+#                                    阶段 S 不隔离的话会把整条 update 打死
 #
 S="${SB_FAKE_STATE:?SB_FAKE_STATE 未设置}"
 
@@ -102,7 +106,11 @@ case "$url" in
     [ -n "${SB_FAKE_SELF_LATEST:-}" ] || exit 22
     _emit "{\"tag_name\": \"v${SB_FAKE_SELF_LATEST}\", \"name\": \"${SB_FAKE_SELF_LATEST}\"}" ;;
   *api.github.com/repos/*/macos-singbox-client-helper/releases/tags/*)
-    _sha=$(shasum -a 256 "${SB_FAKE_SELF_SCRIPT:-/dev/null}" 2>/dev/null | awk '{print $1}')
+    if [ "${SB_FAKE_SELF_BAD_SHA:-}" = 1 ]; then
+      _sha=0000000000000000000000000000000000000000000000000000000000000000
+    else
+      _sha=$(shasum -a 256 "${SB_FAKE_SELF_SCRIPT:-/dev/null}" 2>/dev/null | awk '{print $1}')
+    fi
     _emit "{\"assets\":[{\"name\":\"singbox.sh\",\"digest\":\"sha256:${_sha}\"}]}" ;;
   # 脚本内部下载走的是带版本号的固定 URL；README 里给人手工用的
   # releases/latest/download/... 才会 302，那条不进代码路径。
