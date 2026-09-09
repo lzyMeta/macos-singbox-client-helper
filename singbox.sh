@@ -5,7 +5,7 @@
 # 配套《在 macOS 上直接运行 sing-box —— 配置最佳实践》
 #
 # 用法：singbox <命令> [参数]
-#   install    首次安装（内核 + 系统层准备 + 配置 + 服务）
+#   install    首次安装（内核 + singbox 命令 + 系统层准备 + 配置 + 服务）
 #   sysprep    只做系统层准备（换网络 / 插网卡后修复 IPv6 与 DNS）
 #   status     服务状态、TUN 路由、监听端口
 #   verify     完整验证清单（退出码 0 全过 / 1 链路档 / 2 策略档）
@@ -18,8 +18,8 @@
 #   edit       改配置（校验 + 备份 + 重启）
 #   config     配置子命令：show / backup / list / diff / restore
 #   rules      验证规则集 URL
-#   update     升级内核（沙箱验证 → 升级 → 验收，任一步失败自动回滚）
-#   rollback   换回上一个内核（$BIN.prev）并重新验收
+#   update     升级脚本与内核（先脚本，再沙箱验证 → 升级 → 验收，任一步失败自动回滚）
+#   rollback   换回上一个内核与上一版 singbox 命令（$BIN.prev / $LAUNCHER.prev）并重新验收
 #   mirror     GitHub 下载镜像：test / set <url> / show / reset
 #   doctor     一键诊断
 #   uninstall  卸载
@@ -32,6 +32,16 @@
 #   --prefix <dir>   安装前缀（默认 /usr/local）
 #   -h, --help       帮助
 #   --version        脚本版本（单独使用时；跟在命令后是该命令的参数）
+#
+# 与自更新有关的环境变量：
+#   SB_SELF_REPO      脚本自更新的来源仓库，默认 lzyMeta/macos-singbox-client-helper。
+#                     fork 的人指到自己的 fork 用；测试指到假 repo 用
+#   SB_SELF_UPDATED   =1 表示当前进程是阶段 S exec 出来的，update 会整段跳过阶段 S。
+#                     走环境变量而不是命令行 flag：dispatch 对未知参数一律 die，
+#                     用 flag 就要求新脚本认识旧脚本传的每一个参数，参数一改名，
+#                     升级路径当场断在「未知参数」上 —— 而那条路径正是用来修 bug 的
+#   SB_LOCK_INHERIT   =1 表示锁已由 exec 前的同一个 PID 持有。exec 保留 PID，
+#                     不认它的话新进程会把自己判成「另一个正在运行的实例」
 #
 set -uo pipefail
 
@@ -70,6 +80,16 @@ GH_API_REPO=https://api.github.com/repos/SagerNet/sing-box
 GH_DL=https://github.com/SagerNet/sing-box/releases/download
 GH_RELEASES=https://github.com/SagerNet/sing-box/releases/latest
 
+# 脚本自更新的来源。写死默认值，但留一个环境变量：fork 的人能指到自己的 fork，
+# 测试能把阶段 S 指向假 repo 而不必依赖 URL 里的仓库名匹配。
+# 与发布流程之间唯一的契约是「tag = v$VERSION、asset 名 = singbox.sh」，
+# .github/workflows/release.yml 照着同一条约定写。
+SELF_REPO="${SB_SELF_REPO:-lzyMeta/macos-singbox-client-helper}"
+GH_SELF_API="https://api.github.com/repos/${SELF_REPO}/releases/latest"
+GH_SELF_API_REPO="https://api.github.com/repos/${SELF_REPO}"
+GH_SELF_DL="https://github.com/${SELF_REPO}/releases/download"
+GH_SELF_RELEASES="https://github.com/${SELF_REPO}/releases/latest"
+
 # 前缀式镜像：把完整的 github 链接接在后面即可。
 # 这类站点更替频繁，脚本一律先探测再用，探不通就换下一个。
 # 可用 SB_MIRRORS 环境变量覆盖（空格分隔），或 mirror set 固定一个。
@@ -90,7 +110,12 @@ TMPFILES=()
 SUDO_KEEPALIVE_PID=""
 # 已持有互斥锁。acquire_lock 要可重入：cmd_update 持锁后还会经 cmd_restart
 # 调到 cmd_stop / cmd_start，那几处也要取锁，不可重入就会自己把自己 die 掉。
-LOCK_HELD=0
+#
+# ⚠️ 阶段 S 的 exec 会带 SB_LOCK_INHERIT=1 进来。exec **保留 PID**，
+# 不认这个变量的话，新进程会读 LOCKDIR/pid、kill -0 判活，认定「另一个实例
+# 正在运行」—— 而那个 PID 就是它自己，于是等 3 轮然后 die，且此时脚本已经换过了。
+# 锁文件里存的 PID 在 exec 后依然是对的，不必删了重建，也就没有竞态窗口。
+LOCK_HELD="${SB_LOCK_INHERIT:-0}"
 # 脚本自己拉起的后台 sing-box（install 第 5 步的前台试跑、update 阶段 1 的沙箱）。
 # 不登记进来的话，Ctrl-C 时 cleanup 认不出它们，会留下占着 TUN 或沙箱端口的孤儿。
 BG_PIDS=()
@@ -446,23 +471,28 @@ download() {
 }
 
 # 取最新版本号：API 直连 → API 走镜像 → 解析 releases/latest 的跳转地址
+#
+# latest_version [api_url] [releases_url]
+# 默认查 sing-box 内核；阶段 S 传自家 repo 的两个地址复用同一套镜像与兜底逻辑。
 latest_version() {
   local v m
-  v=$(curl -fsSL --connect-timeout "$CONNECT_TIMEOUT" --max-time "$NET_TIMEOUT" "$GH_API" 2>/dev/null \
+  local api="${1:-$GH_API}"
+  local rel="${2:-$GH_RELEASES}"
+  v=$(curl -fsSL --connect-timeout "$CONNECT_TIMEOUT" --max-time "$NET_TIMEOUT" "$api" 2>/dev/null \
       | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p' | head -1)
   [ -n "$v" ] && { printf '%s' "$v"; return 0; }
 
   for m in $(mirror_list); do
     printf '    查询版本 ← %s … ' "$m" >&2
     v=$(curl -fsSL --connect-timeout "$CONNECT_TIMEOUT" --max-time 12 \
-        "$(mirror_url "$m" "$GH_API")" 2>/dev/null \
+        "$(mirror_url "$m" "$api")" 2>/dev/null \
         | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p' | head -1)
     if [ -n "$v" ]; then printf '%s\n' "$v" >&2; printf '%s' "$v"; return 0; fi
     printf '%s无结果%s\n' "$C_DIM" "$C_N" >&2
   done
 
   # 最后一招：releases/latest 会 302 到 .../tag/vX.Y.Z
-  v=$(curl -fsIL --connect-timeout "$CONNECT_TIMEOUT" --max-time 15 "$GH_RELEASES" 2>/dev/null \
+  v=$(curl -fsIL --connect-timeout "$CONNECT_TIMEOUT" --max-time 15 "$rel" 2>/dev/null \
       | sed -n 's|.*location:.*/tag/v\([0-9][^[:space:]]*\).*|\1|Ip' | tail -1 | tr -d '\r')
   [ -n "$v" ] && { printf '%s' "$v"; return 0; }
   return 1
@@ -483,7 +513,9 @@ asset_digest() {
   # URL 变成 .../tags/v，取不到 digest —— 而调用方只会 warn 一句「取不到」照常下载，
   # 整道校验就这么静默失效了。
   local ver="$1" name="$2" body m api
-  api="$GH_API_REPO/releases/tags/v${ver#v}"
+  # ⚠️ 同样别把它并进上面那条 local —— 理由见上面那段注释。
+  local repo_api="${3:-$GH_API_REPO}"
+  api="$repo_api/releases/tags/v${ver#v}"
   body=$(curl -fsSL --connect-timeout "$CONNECT_TIMEOUT" --max-time "$NET_TIMEOUT" "$api" 2>/dev/null)
   if [ -z "$body" ]; then
     for m in $(mirror_list); do
@@ -785,6 +817,128 @@ _install_launcher() {
   fi
   sudo mv -f "$staged" "$LAUNCHER" || { bad "装不上 $LAUNCHER"; return 1; }
   return 0
+}
+
+
+# 版本比较：a 严格大于 b 才返回 0。
+# ⚠️ 不能用 sort -V —— GNU 专有，自检第 4 项直接禁掉它。
+# 按 . 切三段做数值比较，非数字段一律当 0（1.2.0-rc1 的第三段按 0 算，
+# 于是预发布不会被判成比正式版新）。
+ver_gt() {
+  local a="${1#v}"
+  local b="${2#v}"
+  local i av bv
+  for i in 1 2 3; do
+    av=$(printf '%s' "$a" | cut -d. -f"$i")
+    bv=$(printf '%s' "$b" | cut -d. -f"$i")
+    case "$av" in ''|*[!0-9]*) av=0 ;; esac
+    case "$bv" in ''|*[!0-9]*) bv=0 ;; esac
+    [ "$av" -gt "$bv" ] && return 0
+    [ "$av" -lt "$bv" ] && return 1
+  done
+  return 1
+}
+
+# 阶段 S：脚本更新自己。永远排在内核三阶段**之前** —— 这样内核升级用的总是最新的
+# 升级逻辑，而历史上出问题的恰恰是升级逻辑本身而不是内核。
+#
+# 这个函数的返回值不影响内核阶段：取不到新版（无 release、GitHub 与所有镜像
+# 均不可达）、下载失败、语法不过，一律 warn 一句就返回 0 照升内核。脚本更新
+# 不该有权阻断用户真正要的那件事，何况内核升级自带沙箱与回滚。
+#
+# 换成功且当前进程就是从 $LAUNCHER 启动的话，本函数以 exec 收尾，不返回。
+_self_update() {
+  step "阶段 S/3　脚本自更新"
+
+  if [ "$DRY" = 1 ]; then
+    dim "[dry-run] 查 ${SELF_REPO} 的 latest release，与本地 v${VERSION} 比对"
+    dim "[dry-run] 远端更新则下载 singbox.sh、bash -n、原子替换 ${LAUNCHER}，再 exec 新脚本继续"
+    return 0
+  fi
+
+  local new
+  new=$(latest_version "$GH_SELF_API" "$GH_SELF_RELEASES") || new=""
+  if [ -z "$new" ]; then
+    warn "取不到脚本的最新版本（${SELF_REPO} 还没有 release，或 GitHub 与所有镜像均不可达）"
+    info "跳过脚本自更新，继续升级内核"
+    return 0
+  fi
+  new="${new#v}"
+  info "脚本：本地 v${VERSION}，远端 v${new}"
+
+  # 只有严格大于才升。相等或更小一律不动 —— release 被回退时把用户降级，
+  # 等于把已经修好的 bug 再装回去。
+  if ! ver_gt "$new" "$VERSION"; then
+    ok "脚本已是最新（v${VERSION}）"
+    return 0
+  fi
+
+  local tmpd; tmpd=$(mktmpd)
+  local want_sha; want_sha=$(asset_digest "$new" "singbox.sh" "$GH_SELF_API_REPO") || want_sha=""
+  if [ -n "$want_sha" ]; then dim "校验值来自 GitHub API：${want_sha}"
+  else warn "取不到 singbox.sh 的 sha256 —— 本次不做完整性校验"; fi
+
+  if ! download "$tmpd/singbox.sh" "$GH_SELF_DL/v${new}/singbox.sh" "脚本 v$new" "$want_sha"; then
+    warn "脚本 v${new} 下载失败，跳过自更新，继续升级内核"
+    return 0
+  fi
+
+  # 装一份语法就坏了的脚本等于把用户的 singbox 命令弄死，而他下一次才会发现。
+  # _install_launcher 里还会再验一道，这里先验是为了能说清「为什么没换」。
+  if ! bash -n "$tmpd/singbox.sh" 2>/dev/null; then
+    warn "下载到的 singbox.sh 语法检查未通过，不替换 —— 继续升级内核"
+    return 0
+  fi
+
+  local had_launcher=0
+  [ -f "$LAUNCHER" ] && had_launcher=1
+
+  if ! _install_launcher "$tmpd/singbox.sh" "脚本 v$new"; then
+    warn "脚本没换上，继续升级内核"
+    return 0
+  fi
+  ok "singbox 命令已更新到 v${new}（${LAUNCHER}）"
+  [ "$had_launcher" = 1 ] || \
+    warn "启动器原本不在 ${LAUNCHER}，已按当前 --prefix 装入"
+
+  # 当前进程是不是就是从 $LAUNCHER 启动的。
+  # ⚠️ 两边都要过一次 cd + pwd 再比：readlink -f 在 macOS 上不存在、也被自检禁了，
+  # 而 /var → /private/var 这类符号链接会让「同一个文件」的两个写法字符串不相等，
+  # 于是本该 re-exec 的场景被静默判成「跑的是仓库副本」。
+  local self_dir; self_dir=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
+  local self_src="${self_dir:-$(dirname "$0")}/$(basename "$0")"
+  local lch_dir; lch_dir=$(cd "$(dirname "$LAUNCHER")" 2>/dev/null && pwd)
+  local lch_real="${lch_dir:-$(dirname "$LAUNCHER")}/$(basename "$LAUNCHER")"
+
+  if [ "$self_src" != "$lch_real" ]; then
+    warn "你跑的是 ${self_src}，本次更新的是 ${LAUNCHER}"
+    info "这份副本请自行 git pull 更新。不重新执行 —— 继续用当前脚本升级内核"
+    return 0
+  fi
+
+  # ⚠️ exec 不触发 EXIT trap，TMPFILES 里的临时目录会泄漏。走之前显式清掉。
+  local f
+  for f in ${TMPFILES[@]+"${TMPFILES[@]}"}; do [ -n "$f" ] && rm -rf "$f" 2>/dev/null; done
+  TMPFILES=()
+
+  # ⚠️ SUDO_KEEPALIVE_PID 在这里丢掉，但那个后台循环的条件是 kill -0 $$，
+  # exec 后 PID 没变，所以它继续活着、票据继续续期（这是好事）。新进程不知道
+  # 它存在，会再起一个 —— 多一个循环无害且随进程退出自终。别当成 bug 去「修」。
+  ok "换上新脚本，重新执行以继续升级内核"
+
+  # ⚠️ 开关走环境变量，不走命令行 flag。顶层 dispatch 对未知参数一律 die，
+  # 用 --skip-self 这种 flag 就意味着**旧脚本 exec 新脚本时，新脚本必须认识
+  # 旧脚本传的每一个参数**；哪天参数改名，升级路径当场断在「未知参数」上，
+  # 而这条路径恰恰是用来修 bug 的。未知环境变量不会让谁 die。
+  export SB_SELF_UPDATED=1
+  export SB_LOCK_INHERIT=1
+
+  local argv
+  argv=()
+  [ "$ASSUME_YES" = 1 ] && argv+=(-y)
+  [ "$QUIET" = 1 ] && argv+=(-q)
+  argv+=(--prefix "$PREFIX" update)
+  exec "$LAUNCHER" ${argv[@]+"${argv[@]}"}
 }
 
 #=======================================================================
@@ -2287,6 +2441,14 @@ _sb_rollback_to_prev() {
 cmd_update() {
   require_installed; need_root; acquire_lock
 
+  #--- 阶段 S：脚本自己 -------------------------------------------------
+  # 先脚本后内核。SB_SELF_UPDATED=1 是 exec 进来的新进程，整段跳过防死循环。
+  if [ "${SB_SELF_UPDATED:-0}" = 1 ]; then
+    dim "脚本已在本次升级中更新过，跳过阶段 S"
+  else
+    _self_update
+  fi
+
   #--- 阶段 0：预检（不下载）--------------------------------------------
   step "阶段 0/3　预检"
   local cur new arch
@@ -2768,7 +2930,7 @@ singbox.sh v$VERSION —— sing-box on macOS 全生命周期管理
                       诊断文件写在 0700 的临时目录里（含域名与日志，贴之前先看一眼）
 
 维护
-  update              升级内核：预检 → 沙箱验证 → 升级 → 验收
+  update              升级脚本与内核：阶段 S 脚本自更新 → 预检 → 沙箱验证 → 升级 → 验收
                       沙箱阶段用临时前缀实跑新内核，现网服务不受影响；
                       任一阶段失败自动回滚。跨 minor 会额外确认一次
                       验收只认 verify 的链路档（退出 1）才回滚；策略档（退出 2）
@@ -2793,6 +2955,9 @@ singbox.sh v$VERSION —— sing-box on macOS 全生命周期管理
   SB_PREFIX           同 --prefix
   SB_LOGDIR           日志目录（默认 /var/log）。install 时的取值会烧进 plist
   SB_LOG_WARN_MB      日志体积告警阈值，默认 64
+  SB_SELF_REPO        脚本自更新的来源仓库（默认 lzyMeta/macos-singbox-client-helper）
+  SB_SELF_UPDATED     =1 时 update 跳过阶段 S（阶段 S 自己 exec 时会设）
+  SB_LOCK_INHERIT     =1 时沿用 exec 之前那把锁（同一个 PID）
   EDITOR              edit 的默认编辑器（--editor 优先）
 
 示例

@@ -21,6 +21,13 @@
 #   SB_FAKE_CN_IP=<ip>               国内直连出口报成这个 IP（设成 1.2.3.4 即等于
 #                                    SOCKS 出口，用来驱动「国内直连失效」的硬失败）
 #
+#   —— 阶段 S（脚本自更新）走的是**自家 repo**，按 URL 里的仓库名分流 ——
+#   SB_FAKE_SELF_LATEST=<版本>       自家 repo 的 latest release 报告的版本。
+#                                    不设 = 没有 release，那条查询直接失败，
+#                                    用来驱动「取不到新版 → warn → 照升内核」
+#   SB_FAKE_SELF_SCRIPT=<路径>       下载 singbox.sh 时吐出的脚本内容；
+#                                    digest 同样由它实算，正常路径天然对得上
+#
 S="${SB_FAKE_STATE:?SB_FAKE_STATE 未设置}"
 
 out="" proxy="" url="" head_only=0 want_version=0 http3=0
@@ -89,6 +96,20 @@ case "$url" in
     [ -n "${SB_FAKE_TARBALL:-}" ] && [ -f "$SB_FAKE_TARBALL" ] || exit 22
     [ -n "$out" ] || exit 22
     cp "$SB_FAKE_TARBALL" "$out" ;;
+  # 自家 repo。⚠️ 不加这两条分支的话它会落进末尾的 *) _emit ""，
+  # 于是阶段 S 除了「取不到新版」那条路什么都测不了。
+  *api.github.com/repos/*/macos-singbox-client-helper/releases/latest*)
+    [ -n "${SB_FAKE_SELF_LATEST:-}" ] || exit 22
+    _emit "{\"tag_name\": \"v${SB_FAKE_SELF_LATEST}\", \"name\": \"${SB_FAKE_SELF_LATEST}\"}" ;;
+  *api.github.com/repos/*/macos-singbox-client-helper/releases/tags/*)
+    _sha=$(shasum -a 256 "${SB_FAKE_SELF_SCRIPT:-/dev/null}" 2>/dev/null | awk '{print $1}')
+    _emit "{\"assets\":[{\"name\":\"singbox.sh\",\"digest\":\"sha256:${_sha}\"}]}" ;;
+  # 脚本内部下载走的是带版本号的固定 URL；README 里给人手工用的
+  # releases/latest/download/... 才会 302，那条不进代码路径。
+  */releases/download/v*/singbox.sh)
+    [ -n "${SB_FAKE_SELF_SCRIPT:-}" ] && [ -f "$SB_FAKE_SELF_SCRIPT" ] || exit 22
+    [ -n "$out" ] || exit 22
+    cp "$SB_FAKE_SELF_SCRIPT" "$out" ;;
   *api.ipify.org*)   _emit "5.6.7.8" ;;
   *ipinfo.io*)       n=$(( $(cat "$S/ipinfo_calls" 2>/dev/null || echo 0) + 1 ))
                      echo "$n" > "$S/ipinfo_calls"
