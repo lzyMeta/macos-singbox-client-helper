@@ -1,0 +1,51 @@
+name: release
+
+# 推 v* tag 时建 release，并把 singbox.sh 传成 asset。
+#
+# 这两件事是脚本自更新（cmd_update 阶段 S）与发布流程之间**唯一的契约**：
+#   tag = v$VERSION      asset 名 = singbox.sh
+# 阶段 S 按 tag_name 判新旧、按 $GH_SELF_DL/v<版本>/singbox.sh 取文件，
+# 两边任何一边跑偏，自更新都会静默地什么也不做。
+#
+# ⚠️ 这里**不跑** ./singbox-selfcheck.sh && ./tests/run.sh。tests/ 依赖 PATH 桩、
+# python3 与 bash 3.2 的具体行为，从没在 GitHub 的 macOS runner 上验证过；
+# 把它塞进发布闸门，等于让「能不能发版」取决于一件从未测过的事。
+# 想上 CI 是另一个独立改动。
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: tag 必须与 singbox.sh 的 VERSION 一致
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          ver=$(sed -n 's/^VERSION="\(.*\)"/\1/p' singbox.sh | head -1)
+          echo "tag=${tag}  VERSION=${ver}"
+          if [ -z "$ver" ]; then
+            echo "::error::singbox.sh 里读不到 VERSION"
+            exit 1
+          fi
+          if [ "$tag" != "v${ver}" ]; then
+            echo "::error::tag ${tag} 与 singbox.sh 的 VERSION=${ver} 不一致（应为 v${ver}）"
+            exit 1
+          fi
+
+      - name: 建 release 并上传 singbox.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" singbox.sh \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes

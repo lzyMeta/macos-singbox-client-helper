@@ -9,10 +9,12 @@
 ./singbox-selfcheck.sh && ./tests/run.sh
 ```
 
-前半段是 `singbox.sh` 的静态自检（12 项），后半段是 `tests/` 下的四个测试文件：
-`cli`（参数解析）、`selfcheck`（自检项本身）、`update`（升级状态机）、`verify`（两档退出码）。
+前半段是 `singbox.sh` 的静态自检（13 项），后半段是 `tests/` 下的八个测试文件：
+`cli`（参数解析）、`selfcheck`（自检项本身）、`install`（装 `singbox` 命令）、
+`selfupdate`（`update` 阶段 S 的脚本自更新）、`update`（内核升级状态机与 `rollback`）、
+`logs`（日志体积与截断）、`platform`（架构判定）、`verify`（两档退出码）。
 
-`selfcheck.test.sh` 验证那 12 项**真的在检查**。两种坏法都踩过，且都不会自己暴露：
+`selfcheck.test.sh` 验证那 13 项**真的在检查**。两种坏法都踩过，且都不会自己暴露：
 
 - **恒红**：有 2 项用了 GNU 专有的 `grep -P`，在 BSD grep 上恒报 `invalid option`——
   既抓不到违规，也永远不会绿。
@@ -44,6 +46,10 @@ Stop 闸门开着（`check.stopHook = "on-edit"`）：改完代码要停下时�
 
 `/usr/local/etc/sing-box/config.json` 是用户正在用的配置（root 所有）。`./singbox.sh` 的
 install/uninstall/start/stop/restart/edit 会真的动 launchctl、路由表和 `/usr/local`，已 deny，要试人自己跑。
+
+`install` 现在还会把脚本自己装到 `/usr/local/bin/singbox`，`update` 的阶段 S 会替换它 ——
+同一条 deny 覆盖这两件事。`tests/install.test.sh` 故意在第 5/8 步中止，因为第 7/8 步的
+`$PLIST` 路径写死在 `/Library/LaunchDaemons`，**不跟随 `--prefix`**。
 
 ## 不进仓库的文件
 

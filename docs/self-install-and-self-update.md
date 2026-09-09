@@ -232,4 +232,67 @@ tag 与 `VERSION` 一致时能建出带 `singbox.sh` asset 的 release；
 
 ## 实现计划
 
-（留空，稍后由 build 追加）
+`sdlc-check --scope` 对全部 14 个文件报 `verdict=warn`（单栈但文件多），因此拆成三个
+单元，每个单元自己就跑绿 `./singbox-selfcheck.sh && ./tests/run.sh` 并单独落一个 commit。
+
+**单元 A — 启动器的安装与清理**（commit `6eb59ad`）
+`LAUNCHER` 常量 + `--prefix` 重算、`_install_launcher()`、`install` 插入 `2/8` 并把
+`0/7`–`7/7` 重编号、`rollback` 退启动器、`uninstall` 末尾清理；自检第 13 项与正反
+fixture；`tests/install.test.sh`（验收 1–4）、`selfcheck.test.sh`（15–16）、
+`update.test.sh`（13–14）。
+
+**单元 B — `update` 阶段 S**（commit `a329f06`）
+`LOCK_HELD` 读 `SB_LOCK_INHERIT`、自更新常量、`latest_version()` / `asset_digest()`
+参数化、`ver_gt()`、`_self_update()`、`cmd_update` 接入；`curl` 桩三个新分支；
+`tests/selfupdate.test.sh`（验收 5–12）。
+
+**单元 C — 发布侧与文档**
+`.github/workflows/release.yml`、`VERSION` → `1.2.0`、README / CLAUDE.md /
+`docs/script-usage.md` / `docs/safe-update.md`。
+
+### 与 spec 的三处偏差
+
+1. **验收 1–3 不跑完整的 `install`。** `cmd_install` 第 7/8 步会 `sudo cp` 一份 plist 到
+   `/Library/LaunchDaemons/sing-box.plist` —— 那个路径写死在 `$PLIST` 里，**不跟随
+   `--prefix`**，跑到那一步就会动真实系统。改用 `SB_FAKE_CHECK_FAIL="live:<版本>"`
+   让第 5/8 步静态校验失败而中止；启动器那一步（2/8）紧跟内核（1/8）之后，那时早已
+   执行完，断言对象（存在 / 0755 / 逐字节相同 / `.prev` 的内容）一条不少。
+   要真正跑完 `install`，得先让 `$PLIST` 可覆盖 —— 那是另一个独立改动。
+   为此新增了两个 PATH 桩：`tests/fixtures/bin/networksetup` 与 `scutil`。
+
+2. **判「当前进程是不是从 `$LAUNCHER` 启动的」，两边都要过一次 `cd` + `pwd`。**
+   spec 只说了对 `$0` 这么做。只算一边的话，`/var` → `/private/var` 这类符号链接会让
+   同一个文件的两个写法字符串不相等，于是**本该 re-exec 的场景被静默判成「跑的是仓库
+   副本」**。测试用的 `mktemp -d` 正好落在 `/var/folders`，一写就撞上。
+
+3. **`docs/script-usage.md` 第 1 节也有同一段 `~/bin` 手抄命令**，spec 只点名了
+   `README.md` 2.5。同一件事说了两遍，只改一处就会自相矛盾，一并改了。
+   另外 `CLAUDE.md` 原先写「四个测试文件」而实际已有六个，本次加到八个，顺手修正。
+
+### 两处「不是恒绿」的验证
+
+仓库的纪律是每一项都要有会被抓到与不该被抓到的样本。有四条断言在功能不存在时也会绿，
+逐条验过：
+
+- `update.test.sh` 的 rollback 两条 —— 用 `SB_UNDER_TEST` 指向 `HEAD` 那份没有启动器
+  逻辑的脚本，两条都红（`.prev 还在=是`）。
+- `selfupdate.test.sh` 的「远端 == 本地」「远端 < 本地」—— 用一份把
+  `if ! ver_gt "$new" "$VERSION"` 短路成 `if false` 的变异脚本跑，两条都红。
+
+为此给 `update.test.sh` 与 `selfupdate.test.sh` 都加了 `SB_UNDER_TEST`（沿用
+`platform.test.sh` 已有的写法）。
+
+### 自检第 13 项当场抓到的一个真缺陷
+
+把 `--prefix` 那条 case 分支拆成多行去加 `LAUNCHER=` 之后，`shift 2` 与 `|| die` 护栏
+不再相邻，**自检第 8 项立刻报了出来**。已合回一行，并在那里写明为什么不能拆。
+
+### 待定问题的状态
+
+`v1.2.0` 这个 tag **没有推**，按 spec 归 lzyMeta 手工做。在那之前阶段 S 永远走
+「取不到新版 → warn → 照升内核」，该路径有验收第 8 条覆盖。
+「自更新从 `v1.2.1` 起才真正闭环」已写进 `docs/script-usage.md`，发版时须进 release notes。
+
+`release.yml` 的两条手工核对未做（需要真的推 tag），写进 PR 描述：
+tag 与 `VERSION` 一致时能建出带 `singbox.sh` asset 的 release；故意推一个不一致的 tag 时红。
+
