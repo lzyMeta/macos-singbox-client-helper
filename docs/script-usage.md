@@ -28,8 +28,8 @@ sing-box 在 macOS 上的全生命周期管理工具：安装、配置、验证�
   - [`edit` — 安全地改配置](#edit-安全地改配置)
   - [`config` — 备份与回滚](#config-备份与回滚)
 - [8. 维护](#8-维护)
-  - [`update` — 升级内核](#update-升级内核)
-  - [`rollback` — 换回上一个内核](#rollback-换回上一个内核)
+  - [`update` — 升级脚本与内核](#update-升级脚本与内核)
+  - [`rollback` — 换回上一个内核与上一版命令](#rollback-换回上一个内核)
   - [`uninstall`](#uninstall)
 - [9. 边界情况的处理](#9-边界情况的处理)
 - [10. 常见问题](#10-常见问题)
@@ -38,13 +38,22 @@ sing-box 在 macOS 上的全生命周期管理工具：安装、配置、验证�
 
 ## 1. 安装脚本本身
 
+**这一步 `install` 已经替你做完了**：它的第 3/8 步会把脚本装到
+`/usr/local/bin/singbox`（跟随 `--prefix`），0755。那个目录已经在所有 shell 的默认
+PATH 里，不必改任何 shell rc 文件；之后 `update` 会连它一起升级，`rollback` 一起退回，
+`uninstall` 一起清掉。
+
+只有在**还没跑过 `install`** 的时候才需要手工放一份：
+
 ```bash
-mkdir -p ~/bin
-cp singbox.sh ~/bin/singbox
-chmod +x ~/bin/singbox
+chmod +x singbox.sh
+./singbox.sh install --config ./config.json
 ```
 
 `chmod +x` 是给文件加执行权限——没有它 shell 会拒绝把文件当程序跑，报 `Permission denied`。
+
+下面这一段只适用于你坚持要装在 `~/bin` 的情况。**不推荐**：那份副本与仓库、与
+`/usr/local/bin/singbox` 各活各的，谁都不会更新它，而 PATH 里谁在前面谁生效。
 
 `~/bin` 不在 PATH 里的话（`echo $PATH` 看不到就是），先确认你用的 shell：
 
@@ -109,7 +118,7 @@ singbox <命令> [参数]
 | 运行 | `status` | 服务、TUN 路由、监听端口 |
 | | `start` / `stop` / `restart` | 本次开机内的启停，停服可连带还原 DNS |
 | | `enable` / `disable` | 开机自启开关（跨重启） |
-| | `logs [n\|-f]` | 看日志 |
+| | `logs [n\|-f\|size\|truncate]` | 看日志、看体积、原地回收空间 |
 | 检查 | `verify` | 完整验证清单 |
 | | `syscheck` | 系统层复查 |
 | | `rules` | 验证规则集 URL |
@@ -146,7 +155,7 @@ singbox install [--config <path>] [--version <v>] [--arch <amd64|arm64>] [--forc
 |---|---|
 | `--config` | 配置文件。不给则依次找 `./config.json`、`./config.json`、`~/singbox/config.json` |
 | `--version` | 内核版本。不给则查 GitHub 取最新 |
-| `--arch` | Apple Silicon 用 `arm64`。默认按 `uname -m` 判断 |
+| `--arch` | `amd64` \| `arm64`，取值会当场校验。默认按**硬件**判断（`hw.optional.arm64`），不是按 `uname -m` |
 | `--force` | 已安装时不询问，直接重装内核 |
 
 ### 七个步骤
@@ -261,10 +270,32 @@ singbox dns set 223.5.5.5   # 设为指定地址
 ### `logs`
 
 ```bash
-singbox logs        # 后 50 行
+singbox logs           # 先报体积，再打后 50 行
 singbox logs 200
-singbox logs -f     # 跟随
+singbox logs -f        # 跟随
+singbox logs size      # 只看体积
+singbox logs truncate  # 原地清空，回收空间
 ```
+
+**launchd 不做日志轮转。** plist 把 stdout/stderr 直接指向
+`/var/log/sing-box.log` 与 `/var/log/sing-box.err`，launchd 只管往里写——
+不轮转、不封顶。实测能涨到几百 MB，而在此之前没有任何命令提过一句。
+现在 `status` 与 `doctor` 超过阈值（默认 64 MB，`SB_LOG_WARN_MB` 可改）会点名并指向回收命令。
+
+**为什么回收是「原地截断」而不是轮转。**
+`StandardErrorPath` 那个 fd 是 launchd 打开、`dup2` 到子进程 fd 2 上的。
+一旦换了 inode（`mv`、`rm` 后重建、或任何 rename 式轮转），守护进程会一直往那个
+已经没有名字的旧文件里写：磁盘一点收不回来，而且从此再也看不到新日志。
+`logs truncate` 用的是 `: > 文件`，inode 不变，所以服务不受影响、不用重启。
+
+**为什么不配 newsyslog。**
+macOS 的 `newsyslog` 只会 rename + 新建，没有原地截断的选项
+（`man newsyslog.conf` 的 flags 里 `B/C/D/G/J/N/U/Z` 没有一个是截断）。
+给这份 plist 配上去，等于装了一个看着在管日志、实际让守护进程往已归档文件里写的东西——
+比不装更糟。所以这里不装，代价是回收要手动跑一次 `logs truncate`。
+
+> 日志目录可用 `SB_LOGDIR` 覆盖（默认 `/var/log`）。它在 `install` 时会被烧进 plist，
+> 所以改了要重新 `install` 才生效。
 
 ---
 
@@ -337,7 +368,9 @@ INFO [...] outbound/vless[vpsre]: outbound connection to <某个 tiktok 域名>:
 
 ### `doctor` — 一键诊断
 
-收集全套信息写入 `/tmp/singbox-doctor-*.txt`，并自动判读九类问题：权限不足、端口占用、规则集下载失败、FakeIP 泄漏、DNS 投毒、废弃字段、路由未接管、plist 语法、IPv6 未关。
+收集全套信息写入 `/tmp/singbox-keep-*/doctor-*.txt`（目录 0700、文件 0600 —— 转储里有访问过的域名、出站 tag 与日志），并自动判读十类问题：权限不足、端口占用、规则集下载失败、FakeIP 泄漏、DNS 投毒、废弃字段、路由未接管、plist 语法、IPv6 未关、服务未运行。
+
+退出码：0 未发现已知问题；1 命中了其中任何一条判据。
 
 **出问题先跑它**，比逐条手敲快，输出也方便贴给别人。
 
@@ -403,16 +436,34 @@ singbox config restore <备份路径>
 
 ## 8. 维护
 
-### `update` — 升级内核
+### `update` — 升级脚本与内核
 
-分四个阶段，**每个阶段失败都能退回一个已知可用的状态**：
+先升脚本自己（阶段 S），再走内核的四个阶段，**每个阶段失败都能退回一个已知可用的状态**：
 
 | 阶段 | 做什么 | 失败了会怎样 |
 |---|---|---|
+| S 脚本 | 查本仓库的 latest release，与本地 `VERSION` 比对；远端**严格更高**才下载 asset `singbox.sh`、校验 sha256、`bash -n`、替换 `/usr/local/bin/singbox`，然后 `exec` 新脚本继续 | **不阻断**：warn 一句照升内核 |
 | 0 预检 | 取当前版本与目标版本。跨 minor 额外确认一次 | 什么都没下载，直接退出 |
 | 1 沙箱 | 把新内核装到**临时前缀**，验架构 → `check -c` 当前真实配置 → 用一份**派生配置**实跑，`curl -x socks5h://` 实测建链 | `$BIN` 一个字节都没被动过，现网服务全程在跑 |
 | 2 升级 | `$BIN` → `$BIN.prev`，装新内核，`check -c`，重启，确认进程存活 / TUN 路由在 / 端口在听 | 换回 `.prev` 并重启 |
 | 3 验收 | 跑 `verify` 五步。链路档失败隔 5s 重试一轮 | 链路档两轮都不过才回滚；策略档（退出 2）打 `warn` 放行 |
+
+**为什么脚本排在内核前面。** 升级逻辑本身出过的问题比内核多（Rosetta 下装错架构、
+日志涨到失控、一次全命令审计修了 5 处）。先换脚本，内核升级用的就永远是最新的升级逻辑。
+反过来先升内核，等于用一份已知有 bug 的逻辑去做最危险的那一步。
+
+**阶段 S 不许阻断内核升级。** 取不到新版（仓库还没有 release、GitHub 与所有镜像都不可达）、
+下载失败、下到的脚本 `bash -n` 不过 —— 一律 warn 一句就继续升内核。脚本更新没有权力挡住
+用户真正要做的那件事，何况内核升级自带沙箱与回滚。**远端版本相等或更低时也一律不动**：
+release 被回退时把用户降级，等于把已经修好的 bug 再装回去。
+
+⚠️ **先有鸡先有蛋**：`v1.2.0` 里那份 `singbox.sh` 是第一份**带**阶段 S 的脚本，
+而已装机用户手上那份**没有**阶段 S，拿不到它。这批人必须手工重装一次
+（README 2.1 的 `curl` 那条就是给他们的）。自更新从 `v1.2.1` 起才真正闭环。
+
+替换 `/usr/local/bin/singbox` 用的是 `mv` 而不是 `cp`。bash 是边执行边按偏移量读脚本文件的，
+`cp` 覆盖的是同一个 inode，正在跑的进程下一次读取会落在错误的偏移上 —— 症状是执行到一半
+冒出莫名其妙的语法错误。`mv` 换的是目录项，旧 inode 被 unlink 但仍被打开着。
 
 **为什么要有沙箱这一层。** `check -c` 校验的是配置文件的语法与字段合法性——字段还在、语义变了它照样过。sing-box 迭代快（`1.11` 换过 DNS 格式、`domain_strategy` 在 `1.14` 被移除、`independent_cache` 在 `1.14` 废弃），静态校验通过但新内核起不来、或起来了代理坏了，都是真实会发生的事。所以阶段 1 要真的把它跑起来试一次。
 
@@ -420,11 +471,19 @@ singbox config restore <备份路径>
 
 ⚠️ **沙箱验不到 TUN 与系统路由相关的回归**——派生配置把 `tun` 删了。这类问题只能在阶段 2/3 暴露，靠回滚兜底。这是「不停现网」换来的，是自觉的取舍。
 
-**完整性校验做到哪一步。** 上游 release 的资产列表里**不提供 checksum 文件**（没有 `checksums.txt`、`.sha256`、`SHA256SUMS`），所以只能验到「解压出来能跑，且 `Environment:` 自报的架构与本机一致」。脚本会在输出里明说这一点，不装作做过 sha256。
+**完整性校验做到哪一步。** 上游 release 的资产列表里确实**没有 checksum 文件**（没有 `checksums.txt`、`.sha256`、`SHA256SUMS`），但 GitHub Releases API 的每个 asset 带 `digest` 字段（`sha256:<hex>`），校验值从那里取。下载完当场比对，对不上就删文件并终止；取不到（老 release 无该字段、或 API 不可达）就打一条 warn 后放行，不装作校验过。
+
+⚠️ 这道校验能挡的是**传输损坏**与**单个镜像投毒**。API 本身也可能是经镜像拿到的——那种情况下 digest 的可信度不高于那个镜像，挡不住「API 与文件出自同一个坏镜像」。它不是签名。
+
+架构那一步仍然照验：sha256 只能证明「文件没被改」，不能证明「下对了平台」。
 
 **废弃字段告警照打照记，但一个字都不自动改。** 「哪些字段该改成什么写法」需要读 release notes 和上游文档，那是另一件事。
 
-升级成功后 `$BIN.prev` **保留**，留到下一次 `update` 才被覆盖——见下面的 `rollback`。升级后会提醒跑 `rules`。
+升级成功后 `$BIN.prev` **保留**，留到下一次 `update` 才被覆盖——见下面的 `rollback`。
+
+`.prev` 只由 `update` 写。`install` 不碰它：install 内部那个「新二进制跑不起来就换回去」的临时回滚点放在临时目录里，跑完随 `TMPFILES` 一起回收。（早先两者共用 `$BIN.prev`，于是 update 成功后再跑一次 install 会把退路无声删掉。）
+
+升级后会提醒跑 `rules`。
 
 ```bash
 singbox update            # 跨 minor 时会停下来问一次
@@ -438,6 +497,10 @@ singbox rollback
 ```
 
 `$BIN.prev` 换回去 → 重启 → 跑一遍阶段 3 的验收。没有 `.prev` 就报错退出，什么都不动。
+
+`/usr/local/bin/singbox.prev` 在的话，**`singbox` 命令一并退回上一版**。两者的退路是
+独立的：只退内核而不退命令，下次跑的仍是新脚本，等于只退了一半，而终端上看不出来。
+命令没有 `.prev` 时只退内核，并明说这一点。
 
 存在的理由是「当时一切正常，半小时后才发现某个网站进不去」——那时候升级流程早已结束，`update` 里的回滚分支帮不上忙。
 
@@ -568,7 +631,15 @@ SOCKS 不通说明问题在节点本身，与 TUN、路由规则无关。逐字�
 `--prefix ~/singbox-local`。注意 plist 里的路径会跟着变，卸载重装时前缀要一致。
 
 **Q：Apple Silicon 能用吗**
-能。脚本按 `uname -m` 自动判断，也可 `--arch arm64` 显式指定。
+能，自动判断，不需要手动指定。
+
+判据是硬件（`sysctl -n hw.optional.arm64`），**不是 `uname -m`**。
+`uname -m` 报的是当前**进程**的架构：在 Rosetta 方式打开的终端、x86_64 的 Homebrew bash、
+或 `arch -x86_64 bash` 里，它会说 `x86_64`。早先按它判断，会在 ARM 机器上装 Intel 内核——
+一个常驻的网络路径守护进程被塞进翻译层，而且 `update` 走同一个函数，会把这个错误一直续下去。
+
+检测到当前 shell 被翻译时，`install` 会明说，并提示用 `arch -arm64 zsh` 开一个原生 shell。
+要覆盖自动判断仍可用 `--arch`。
 
 **Q：`update` 说 GitHub 与所有镜像均不可达**
 先 `singbox mirror test` 看是哪一层的问题。代理能跑的话先 `start` 让它工作，直连往往就通了。内置镜像全挂就用 `SB_MIRRORS` 指定自己的，或按 `mirror` 一节手动下载内核。

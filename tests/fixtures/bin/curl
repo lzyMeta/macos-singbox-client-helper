@@ -7,6 +7,10 @@
 # 只有端口能把它们分开。
 #
 #   SB_FAKE_LATEST=<版本>            releases/latest 报告的版本
+#   SB_FAKE_BAD_SHA=1                releases/tags 报一个对不上的 digest，
+#                                    用来驱动「下载物被篡改」那条路径
+#   SB_FAKE_NO_DIGEST=1              asset 不带 digest 字段（老 release 的形态），
+#                                    用来验证降级放行而不是硬失败
 #   SB_FAKE_TARBALL=<路径>           下载内核时吐出的 tar.gz
 #   SB_FAKE_PROBE_FAIL=1             所有 URL 探测不通（模拟断网）
 #   SB_FAKE_SANDBOX_SOCKS_FAIL=1     阶段 1 沙箱建链失败
@@ -16,6 +20,17 @@
 #   SB_FAKE_CN_FAIL=cip|all          cip.cc 挂掉 / 连两个备胎一起挂
 #   SB_FAKE_CN_IP=<ip>               国内直连出口报成这个 IP（设成 1.2.3.4 即等于
 #                                    SOCKS 出口，用来驱动「国内直连失效」的硬失败）
+#
+#   —— 阶段 S（脚本自更新）走的是**自家 repo**，按 URL 里的仓库名分流 ——
+#   SB_FAKE_SELF_LATEST=<版本>       自家 repo 的 latest release 报告的版本。
+#                                    不设 = 没有 release，那条查询直接失败，
+#                                    用来驱动「取不到新版 → warn → 照升内核」
+#   SB_FAKE_SELF_SCRIPT=<路径>       下载 singbox.sh 时吐出的脚本内容；
+#                                    digest 同样由它实算，正常路径天然对得上
+#   SB_FAKE_SELF_BAD_SHA=1           自家 repo 报一个对不上的 digest。
+#                                    ⚠️ 这条驱动的是「直连下来的文件校验失败」——
+#                                    download() 在那一档走的是 die 而不是 return，
+#                                    阶段 S 不隔离的话会把整条 update 打死
 #
 S="${SB_FAKE_STATE:?SB_FAKE_STATE 未设置}"
 
@@ -68,10 +83,41 @@ fi
 case "$url" in
   *api.github.com/repos/SagerNet/sing-box/releases/latest*)
     _emit "{\"tag_name\": \"v${SB_FAKE_LATEST:-1.14.0}\", \"name\": \"${SB_FAKE_LATEST:-1.14.0}\"}" ;;
+  *api.github.com/repos/SagerNet/sing-box/releases/tags/*)
+    # asset_digest 取的就是这里。digest 直接由 $SB_FAKE_TARBALL 算出来，
+    # 这样「正常路径」天然对得上，不用在测试里硬编码 hash。
+    _arch=$([ "$(uname -m)" = arm64 ] && echo arm64 || echo amd64)
+    _name="sing-box-${SB_FAKE_LATEST:-1.14.0}-darwin-${_arch}.tar.gz"
+    if [ "${SB_FAKE_NO_DIGEST:-}" = 1 ]; then
+      _emit "{\"assets\":[{\"name\":\"${_name}\",\"size\":1}]}"
+    elif [ "${SB_FAKE_BAD_SHA:-}" = 1 ]; then
+      _emit "{\"assets\":[{\"name\":\"${_name}\",\"digest\":\"sha256:${_bad:-0000000000000000000000000000000000000000000000000000000000000000}\"}]}"
+    else
+      _sha=$(shasum -a 256 "${SB_FAKE_TARBALL:-/dev/null}" 2>/dev/null | awk '{print $1}')
+      _emit "{\"assets\":[{\"name\":\"${_name}\",\"digest\":\"sha256:${_sha}\"}]}"
+    fi ;;
   *.tar.gz)
     [ -n "${SB_FAKE_TARBALL:-}" ] && [ -f "$SB_FAKE_TARBALL" ] || exit 22
     [ -n "$out" ] || exit 22
     cp "$SB_FAKE_TARBALL" "$out" ;;
+  # 自家 repo。⚠️ 不加这两条分支的话它会落进末尾的 *) _emit ""，
+  # 于是阶段 S 除了「取不到新版」那条路什么都测不了。
+  *api.github.com/repos/*/macos-singbox-client-helper/releases/latest*)
+    [ -n "${SB_FAKE_SELF_LATEST:-}" ] || exit 22
+    _emit "{\"tag_name\": \"v${SB_FAKE_SELF_LATEST}\", \"name\": \"${SB_FAKE_SELF_LATEST}\"}" ;;
+  *api.github.com/repos/*/macos-singbox-client-helper/releases/tags/*)
+    if [ "${SB_FAKE_SELF_BAD_SHA:-}" = 1 ]; then
+      _sha=0000000000000000000000000000000000000000000000000000000000000000
+    else
+      _sha=$(shasum -a 256 "${SB_FAKE_SELF_SCRIPT:-/dev/null}" 2>/dev/null | awk '{print $1}')
+    fi
+    _emit "{\"assets\":[{\"name\":\"singbox.sh\",\"digest\":\"sha256:${_sha}\"}]}" ;;
+  # 脚本内部下载走的是带版本号的固定 URL；README 里给人手工用的
+  # releases/latest/download/... 才会 302，那条不进代码路径。
+  */releases/download/v*/singbox.sh)
+    [ -n "${SB_FAKE_SELF_SCRIPT:-}" ] && [ -f "$SB_FAKE_SELF_SCRIPT" ] || exit 22
+    [ -n "$out" ] || exit 22
+    cp "$SB_FAKE_SELF_SCRIPT" "$out" ;;
   *api.ipify.org*)   _emit "5.6.7.8" ;;
   *ipinfo.io*)       n=$(( $(cat "$S/ipinfo_calls" 2>/dev/null || echo 0) + 1 ))
                      echo "$n" > "$S/ipinfo_calls"

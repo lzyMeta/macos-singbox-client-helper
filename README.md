@@ -50,7 +50,8 @@ App → utun 虚拟网卡 → 嗅探（还原域名）→ DNS 劫持 → 路由�
 
 ### 适用环境
 
-- macOS（在 Intel 机型上开发与验证；Apple Silicon 加 `--arch arm64`）
+- macOS，Intel 与 Apple Silicon 都可以（架构自动判断，按硬件而非 `uname -m`，所以 Rosetta 下的 shell 也不会选错）
+- **只有 macOS。** Windows 与 Linux 不在支持范围，也不打算支持：服务管理靠 launchd、网络与 DNS 靠 `networksetup` / `scutil`、配置校验靠 `plutil`，换平台等于另写一个程序。在非 macOS 上运行会点名当前系统并说明缺什么，然后退出
 - sing-box **1.12 / 1.13 / 1.14**（1.11 及更早的 DNS 格式不同，配置不兼容）
 - 本机代理场景，非软路由
 
@@ -76,6 +77,15 @@ chmod +x singbox.sh
 ```bash
 xattr -dr com.apple.quarantine .
 ```
+
+只要脚本、不要仓库的话，直接取最新 release 的那一份：
+
+```bash
+curl -fsSLO https://github.com/lzyMeta/macos-singbox-client-helper/releases/latest/download/singbox.sh
+chmod +x singbox.sh
+```
+
+装完之后它会自己保持更新（见 [2.5](#25-singbox-命令与脚本自更新)），配置模板仍需从仓库取。
 
 ### 2.2 填写配置
 
@@ -107,9 +117,9 @@ $EDITOR config.json
 
 需要管理员密码：TUN 建虚拟网卡、改路由表必须 root。
 
-安装流程共七步：环境检查 → 装内核 → **系统层准备** → 放置配置 → 静态校验 → 前台试跑 → 装服务 → 自动验证。
+安装流程共八步：环境检查 → 装内核 → 装 `singbox` 命令 → **系统层准备** → 放置配置 → 静态校验 → 前台试跑 → 装服务 → 自动验证。
 
-> **第三步不能跳。** 关闭 IPv6、把系统 DNS 指向非局域网地址、退掉其他 VPN——这三件事配置文件管不了，不做的话后面验证一定过不去，而症状完全不指向真正的原因。
+> **第四步不能跳。** 关闭 IPv6、把系统 DNS 指向非局域网地址、退掉其他 VPN——这三件事配置文件管不了，不做的话后面验证一定过不去，而症状完全不指向真正的原因。
 
 ### 2.4 装完之后
 
@@ -121,14 +131,22 @@ $EDITOR config.json
 
 还有一件脚本做不了的事：**关闭浏览器的内置 DoH**。Chrome 在 `chrome://settings/security` 关闭「使用安全 DNS」，Firefox 在 `about:config` 把 `network.trr.mode` 设为 `5`。不关的话它会绕过系统 DNS，典型症状是 Google 打不开而别的站正常。
 
-### 2.5 把脚本装进 PATH（可选）
+### 2.5 `singbox` 命令与脚本自更新
 
-```bash
-mkdir -p ~/bin && cp singbox.sh ~/bin/singbox && chmod +x ~/bin/singbox
-echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
-```
+**这一步 `install` 已经替你做完了。** 第三步会把脚本自己装到
+`/usr/local/bin/singbox`（跟随 `--prefix`），0755，之后全局可用 `singbox <命令>`。
+选这个目录是因为它已经在所有 shell 的默认 PATH 里 —— **不用改 `~/.zshrc`**。
+目标位置原本有别的内容时，旧的会先存成 `singbox.prev`。
 
-之后全局可用 `singbox <命令>`。
+装好之后 `update` 会连脚本一起升：它先查本仓库的 latest release，远端版本比本地
+`VERSION` **严格更高**才下载、校验 sha256、`bash -n` 过一遍、替换掉
+`/usr/local/bin/singbox`，然后接着升内核。先脚本后内核，是因为出问题的往往是升级
+逻辑本身。取不到新版就只 warn 一句照升内核 —— 脚本更新没有权力挡住你真正要做的事。
+
+`rollback` 会把内核与 `singbox` 命令一起退回上一版，`uninstall` 会把它们清掉。
+
+> 之前手工 `cp` 到 `~/bin/singbox` 的旧版本，新的 `install` 不会去找它、不会删它、
+> 也不会警告它。**自己删掉即可**，否则 PATH 里谁在前面谁生效，你会用着一份永不更新的副本。
 
 ---
 
@@ -144,11 +162,13 @@ echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 | 配置 | `edit` `config` `dns` |
 | 维护 | `update` `rollback` `mirror` `uninstall` |
 
+> `update` 升级的是**脚本与内核两样**；`rollback` 也是两样一起退。
+
 几个值得单独知道的：
 
 - **`verify`** 五步验证，**没有任何一步会被静默跳过**——退出码 `0` 全过、`1` 链路档失败（换内核可能修好）、`2` 仅策略档失败（DNS/QUIC/国内直连，回滚换不回来，`update` 不会因此回滚）。**第 2 步最关键**：两个出口 IP 必须不同——日志只能证明"流量派给了 `vpsre` 出站"，证明不了它的出口真是住宅 IP（那段中转在服务端，客户端看不见）。这是客户端侧唯一能发现中转断掉的手段。
 - **`syscheck`** 最容易忘、也最该记住。IPv6 与 DNS 设置**按网络服务生效、不会继承**——插网卡、连手机热点、公司 VPN 退出没还原 DNS，都会留下缺口，而代理看起来一切正常。
-- **`doctor`** 出问题先跑它，自动判读九类常见故障并输出诊断文件。
+- **`doctor`** 出问题先跑它，自动判读十类常见故障并输出诊断文件（写在 0700 的临时目录里 —— 里面有你访问过的域名与日志，贴出来之前先看一眼）。
 - **`edit`** 改配置走"校验 → 备份 → 重启"，两关都过才写入，不过则保留你的修改到临时文件。
 - **`dns`** 查看与切换系统 DNS。停服后 `1.1.1.1` 的明文查询在国内同样会被污染，所以 `stop` / `disable` / `uninstall` 会询问是否交回 DHCP。
 
@@ -159,11 +179,14 @@ echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 - **绝不 `kill -9`**：强杀会留下残留路由，症状是断网且看不出原因。
 - **用 `bootstrap` / `bootout` 而非 `load` / `unload`**：后者报错含糊，`Load failed: 5: Input/output error` 几乎不给线索。
 - **改配置前一定备份**，带时间戳，自动保留最近 10 份。
+- **升级先换脚本再换内核**：`update` 的阶段 S 先把 `/usr/local/bin/singbox` 更新到最新 release 再继续 —— 历史上出问题的恰恰是升级逻辑本身而不是内核。取不到新脚本只 warn，不阻断内核升级。
 - **升级分四个阶段，每个阶段都能退回已知可用的状态**：阶段 1 把新内核装到临时前缀、用一份去掉 `tun`、改了端口的**派生配置**实跑并实测建链——现网服务全程不受影响；到阶段 2 才动 `/usr/local/bin/sing-box`，起不来就回滚；阶段 3 跑一遍 `verify` 五步验收。
 - **`rollback` 是随时能按的按钮**：升级成功后旧内核保留在 `sing-box.prev`，当时一切正常、半小时后才发现某个网站进不去，一条命令换回去。只保留一份，只能退一步。
 - **只读命令不要 sudo**：`verify`、`syscheck`、`rules` 全程无需管理员权限。
 
-改动脚本后跑 `./singbox-selfcheck.sh && ./tests/run.sh`。前半段是静态自检，覆盖几类 macOS 特有的坑（bash 3.2 的变量解析、BSD `mktemp` 的模板限制、`set -u` 下的空数组展开等）；后半段是 `tests/`，用 PATH 前置的桩把 `update` / `rollback` 的状态机整个跑一遍——离线、不要 sudo、不碰真实系统。
+改动脚本后跑 `./singbox-selfcheck.sh && ./tests/run.sh`。前半段是静态自检（13 项），覆盖几类 macOS 特有的坑（bash 3.2 的变量解析与 `shift 2` 的参数消耗、BSD `mktemp` 的模板限制、`set -u` 下的空数组展开等）；后半段是 `tests/`，用 PATH 前置的桩把参数解析、`install` 装 `singbox` 命令、`update` 的脚本自更新与内核四阶段、`rollback` 的状态机、日志管理、平台与架构判定、`verify` 的两档退出码整个跑一遍——离线、不要 sudo、不碰真实系统。
+
+自检的每一项在 `tests/fixtures/` 里都有「会被抓到」和「不该被抓到」两种样本钉住。这不是形式主义：曾经有 2 项用了 GNU 专有的 `grep -P`，在 BSD grep 上恒报错、永远不绿；也曾有 1 项的正则只匹配恰好 2 空格缩进，于是恒绿、永远不报。两种坏法都不会自己暴露。
 
 ---
 
@@ -200,10 +223,18 @@ echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 ├── LICENSE                    许可（个人使用）
 ├── singbox.sh                 管理脚本
 ├── singbox-selfcheck.sh       脚本静态自检
+├── .github/workflows/
+│   └── release.yml            推 v* tag 时校验 tag == VERSION，建 release 并传 singbox.sh
 ├── tests/
 │   ├── run.sh                 跑 tests/ 下所有 *.test.sh
 │   ├── selfcheck.test.sh      验证自检项真的在检查
+│   ├── install.test.sh        install 把脚本装成 $PREFIX/bin/singbox
+│   ├── selfupdate.test.sh     update 阶段 S（脚本自更新）的状态机
 │   ├── update.test.sh         update / rollback 的状态机断言
+│   ├── logs.test.sh           日志体积可见性与原地截断
+│   ├── platform.test.sh       平台与 CPU 架构判定（Rosetta）
+│   ├── cli.test.sh            参数解析
+│   ├── verify.test.sh         verify 的两档退出码
 │   └── fixtures/              样本脚本与 PATH 桩（假 sudo / curl / launchctl 等）
 ├── config/
 │   └── config.example.json    配置模板（占位符）

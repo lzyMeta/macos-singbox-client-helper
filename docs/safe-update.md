@@ -8,8 +8,8 @@
 **① 回滚点在重启之前就被删掉了。**
 
 ```bash
-sudo rm -f "$BIN.prev"      # singbox.sh:1431
-cmd_restart                 # singbox.sh:1432 —— 返回值也没有被检查
+sudo rm -f "$BIN.prev"      # 当时的 cmd_update 内
+cmd_restart                 # 同上 —— 返回值也没有被检查
 ```
 
 `sing-box check -c` 通过、但新内核起不来（或起来了但代理坏了）时，旧二进制已经不在。
@@ -26,6 +26,20 @@ cmd_restart                 # singbox.sh:1432 —— 返回值也没有被检查
 
 把 `update` 从「下载 → 换 → 静态校验 → 重启」改造成**四个阶段，每个阶段都能回到一个已知可用的
 状态**；并新增 `rollback` 子命令，把回滚从「升级过程中的一个分支」变成「任何时候都能按的按钮」。
+
+**阶段 S · 脚本自更新**（`v1.2.0` 新增，排在阶段 0 之前）
+
+查本仓库的 latest release，与本地 `VERSION` 比对；远端**严格更高**才下载 asset
+`singbox.sh`（走与内核完全相同的 `download()` / 镜像 / sha256 校验路径）、`bash -n`
+过一遍、用 `mv` 原子替换 `$LAUNCHER`，再 `exec` 新脚本继续跑阶段 0–3。
+
+顺序是「先脚本后内核」：这样内核升级用的永远是最新的升级逻辑 —— 过去出问题的恰恰是
+升级逻辑本身而不是内核。取不到新版、下载失败、语法不过，一律 warn 一句就照升内核；
+相等或更低一律不动，防止 release 被回退时把用户降级。
+
+`SB_SELF_UPDATED=1` 让 exec 出来的新进程整段跳过阶段 S（防死循环），
+`SB_LOCK_INHERIT=1` 让它沿用同一把锁（exec 保留 PID，不然会把自己判成另一个实例）。
+细节见 [self-install-and-self-update.md](self-install-and-self-update.md)。
 
 **阶段 0 · 预检（不下载）**
 取当前版本与目标版本。**minor 号发生变化时额外确认一次**（`ask` 默认 `n`，所以 `-y` 非交互模式
@@ -59,7 +73,7 @@ cmd_restart                 # singbox.sh:1432 —— 返回值也没有被检查
 第 2/3/4/5 步依赖 `ipinfo.io` / `dig` / `cloudflare-quic.com` / `cip.cc`，一次抖动不该把一次
 成功的升级回滚掉。
 
-**成功之后 `$BIN.prev` 保留**，留到下一次 `update` 才被覆盖。这覆盖了「当时一切正常，半小时后
+**成功之后 `$BIN.prev` 保留**，留到下一次 `update` 才被覆盖（`install` 不碰它 —— 它自己的临时回滚点在临时目录里）。这覆盖了「当时一切正常，半小时后
 才发现某个网站进不去」——那时 `singbox rollback` 一条命令换回去、重启、跑一遍阶段 3 的验收。
 
 ## 不在范围内

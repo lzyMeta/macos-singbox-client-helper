@@ -128,9 +128,18 @@
 
 ## 待定问题
 
-1. **QUIC 探测全部超时时，「已阻断」与「本机 UDP 出网整体不通」区分不了。** 当前判为「已阻断」
-   （乐观读法）。第 1 步只验证了 TCP 通。若要区分，需要一个已知不该被拦的 UDP 对照端点
-   （如 DNS over UDP 到 `8.8.8.8:53`），会引入新的判定分支。—— 责任人 lzyMeta，可先落地再看真机表现。
+1. ~~**QUIC 探测全部超时时，「已阻断」与「本机 UDP 出网整体不通」区分不了。**~~
+   **已解决**（v1.1.0）。按当初设想的方向做了：新增 `_sb_udp_alive` 对照组，
+   发一个标准 DNS 查询到公共解析器的 udp/53。判据变成三分支——
+   QUIC 通 → 未阻断（`vpbad`）；QUIC 不通但对照通 → 已阻断（`ok`）；
+   两个都不通 → **这一步没有结论**（`vpbad`），与第 3、5 步「取不到数据就是没有结论」一致。
+   
+   没有改成「多试几次」：QUIC 被挡住是**期望的成功路径**，表现恰恰是全部超时，
+   加重试会给每一次正常的 `verify` 平白加十几秒，还要乘 `_sb_verify_rounds` 的两轮。
+   
+   ⚠️ 对照组证明的是「UDP 有来回」，不是「UDP 直出」——配置里的 DNS 劫持规则
+   完全可能把这个查询接管掉再代答。用作「本机 UDP 是不是整个废了」的判据够用，别当成别的。
+   测试后门 `SB_FAKE_UDP=alive|dead`，与 `SB_FAKE_QUIC` 同理。
 2. **真机验证要你自己跑。** `CLAUDE.md` 写明本机有 live sing-box，`./singbox.sh` 的
    install/start/restart 等已 deny。下面「验证」的第 2 段必须由人执行。
 
@@ -151,8 +160,11 @@
 | 3 | `SB_FAKE_DIG_FAIL=1` | 退出码 `0` —— 降级到 `host` 后照样完成检查，**不跳过** |
 | 4 | `dig`/`host`/`dscacheutil` 桩全废 | 退出码 `2`，报「无可用解析手段」，且与污染报错文案不同 |
 | 5 | `dig` 桩返回 `157.240.1.1` | 退出码 `2`，报疑似污染 |
+| 5b | `dig` 桩返回 `1.2.3.4,157.240.9.9,5.6.7.8` | 退出码 `2` —— 污染 IP 不在第一条也要抓到 |
+| 5c | `dig` 桩返回 `131.13.5.5` | 退出码 `0` —— 不许因为子串 `31.13.` 而误报 |
 | 6 | `SB_FAKE_QUIC=open` | 退出码 `2`，第 4 步打 ✗（**不再是 warn，也不再跳过**） |
-| 7 | `SB_FAKE_QUIC=blocked` | 第 4 步 `ok` |
+| 7 | `SB_FAKE_QUIC=blocked` + `SB_FAKE_UDP=alive` | 第 4 步 `ok` |
+| 7b | `SB_FAKE_QUIC=blocked` + `SB_FAKE_UDP=dead` | 退出码 `2`，报「UDP 整体出不去…没有结论」，**不再假绿** |
 | 8 | `SB_FAKE_CN_IP=1.2.3.4`（等于 SOCKS 出口） | 退出码 `2`，报国内直连失效 |
 | 9 | `cip.cc` 桩失败但备胎可用 | 退出码 `0` |
 | 10 | `cip.cc` 与两个备胎全失败 | 退出码 `2` |
@@ -164,7 +176,7 @@
 第 13/14 条最关键——它们是「分档」这个决定唯一能被机械证伪的地方，
 写法照抄 `tests/update.test.sh` 现有的状态机断言。
 
-`singbox-selfcheck.sh` 的 8 项静态检查同时是硬约束，新代码必须过：bash 3.2（无 `declare -A`
+`singbox-selfcheck.sh` 的 12 项静态检查同时是硬约束，新代码必须过：bash 3.2（无 `declare -A`
 / `${x^^}` / `mapfile`）、BSD 工具链（无 `sed -i `、`readlink -f`、`grep -oP`）、
 变量后紧跟全角字符要写 `${VAR}中文`、数组在 `set -u` 下不裸展开。内联 `python3` 用
 `<<'PY'` heredoc（`sock_addr:196` 与 `cmd_debug` 有现成写法）。
@@ -249,7 +261,7 @@
 **验证结果**（`./singbox-selfcheck.sh && ./tests/run.sh`）
 
 - 写完测试、未改实现时：`通过 3，失败 9`，失败点名的是退出码（如「期望 2 实际 0」），不是语法错。
-- 实现之后：静态自检 8 项全过；`selfcheck.test.sh` 8/8、`update.test.sh` 13/13、
+- 实现之后：静态自检 12 项全过；`selfcheck.test.sh` 26/26、`update.test.sh` 18/18、
   `verify.test.sh` 13/13（评审后从 12 条增到 13 条），退出码 `0`。
 
 **真机那段仍待人工执行**（`./singbox.sh verify; echo "exit=$?"`），脚本已 deny。

@@ -5,21 +5,25 @@
 # 配套《在 macOS 上直接运行 sing-box —— 配置最佳实践》
 #
 # 用法：singbox <命令> [参数]
-#   install    首次安装（内核 + 系统层准备 + 配置 + 服务）
+#   install    首次安装（内核 + singbox 命令 + 系统层准备 + 配置 + 服务）
+#   sysprep    只做系统层准备（换网络 / 插网卡后修复 IPv6 与 DNS）
 #   status     服务状态、TUN 路由、监听端口
-#   verify     完整验证清单
+#   verify     完整验证清单（退出码 0 全过 / 1 链路档 / 2 策略档）
 #   syscheck   系统层复查（换网络 / 换硬件后跑）
 #   start | stop | restart
 #   enable | disable
-#   logs [n|-f]
+#   dns        系统 DNS：status / dhcp / backup / proxy / set <地址>
+#   logs       [n|-f|size|truncate] 看日志、看体积、原地回收空间
 #   debug      debug 前台跑，看分流命中
 #   edit       改配置（校验 + 备份 + 重启）
-#   config     配置子命令：show / backup / restore / diff
+#   config     配置子命令：show / backup / list / diff / restore
 #   rules      验证规则集 URL
-#   update     升级内核（沙箱验证 → 升级 → 验收，任一步失败自动回滚）
-#   rollback   换回上一个内核（$BIN.prev）并重新验收
+#   update     升级脚本与内核（先脚本，再沙箱验证 → 升级 → 验收，任一步失败自动回滚）
+#   rollback   换回上一个内核与上一版 singbox 命令（$BIN.prev / $LAUNCHER.prev）并重新验收
+#   mirror     GitHub 下载镜像：test / set <url> / show / reset
 #   doctor     一键诊断
 #   uninstall  卸载
+#   help       同 -h
 #
 # 全局参数：
 #   -y, --yes        非交互，所有询问取默认值
@@ -27,10 +31,21 @@
 #   -n, --dry-run    只打印将要执行的操作
 #   --prefix <dir>   安装前缀（默认 /usr/local）
 #   -h, --help       帮助
+#   --version        脚本版本（单独使用时；跟在命令后是该命令的参数）
+#
+# 与自更新有关的环境变量：
+#   SB_SELF_REPO      脚本自更新的来源仓库，默认 lzyMeta/macos-singbox-client-helper。
+#                     fork 的人指到自己的 fork 用；测试指到假 repo 用
+#   SB_SELF_UPDATED   =1 表示当前进程是阶段 S exec 出来的，update 会整段跳过阶段 S。
+#                     走环境变量而不是命令行 flag：dispatch 对未知参数一律 die，
+#                     用 flag 就要求新脚本认识旧脚本传的每一个参数，参数一改名，
+#                     升级路径当场断在「未知参数」上 —— 而那条路径正是用来修 bug 的
+#   SB_LOCK_INHERIT   =1 表示锁已由 exec 前的同一个 PID 持有。exec 保留 PID，
+#                     不认它的话新进程会把自己判成「另一个正在运行的实例」
 #
 set -uo pipefail
 
-VERSION="1.0.0"
+VERSION="1.2.0"
 
 #=======================================================================
 # 全局变量与默认值
@@ -39,19 +54,41 @@ PREFIX="${SB_PREFIX:-/usr/local}"
 BIN="$PREFIX/bin/sing-box"
 ETC="$PREFIX/etc/sing-box"
 CFG="$ETC/config.json"
+# 脚本自己的安装位置。选 $PREFIX/bin 而不是 ~/bin，是因为它已经在所有 shell 的
+# 默认 PATH 里 —— 不用碰 ~/.zshrc，自动化才算真的做完了；而 install 本来就已经
+# need_root，不多要一次权限。
+LAUNCHER="$PREFIX/bin/singbox"
 PLIST=/Library/LaunchDaemons/sing-box.plist
 LABEL=system/sing-box
-LOGFILE=/var/log/sing-box.log
-ERRFILE=/var/log/sing-box.err
+# 日志目录。默认 /var/log，与 plist 里写死的绝对路径一致。
+# 做成可覆盖不只是为了测试：路径写死正是「日志涨到几百 MB 也没有任何测试能发现」
+# 的直接原因。install 时的取值会被烧进 plist，所以改了它就得重装服务。
+LOGDIR="${SB_LOGDIR:-/var/log}"
+LOGFILE="$LOGDIR/sing-box.log"
+ERRFILE="$LOGDIR/sing-box.err"
 LOCKDIR=/tmp/.singbox-sh.lock
 PREFS_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/singbox"
 PREFS="$PREFS_DIR/prefs"
 DNS_BACKUP="$PREFS_DIR/dns-backup"
 PROXY_DNS=1.1.1.1
+# 日志体积告警阈值（MB）。launchd 把 stdout/stderr 直接怼进文件，只涨不落；
+# 超过这个数 status 与 doctor 就点名，并指向 logs truncate。
+LOG_WARN_MB="${SB_LOG_WARN_MB:-64}"
 DEFAULT_EDITOR=vi
 GH_API=https://api.github.com/repos/SagerNet/sing-box/releases/latest
+GH_API_REPO=https://api.github.com/repos/SagerNet/sing-box
 GH_DL=https://github.com/SagerNet/sing-box/releases/download
 GH_RELEASES=https://github.com/SagerNet/sing-box/releases/latest
+
+# 脚本自更新的来源。写死默认值，但留一个环境变量：fork 的人能指到自己的 fork，
+# 测试能把阶段 S 指向假 repo 而不必依赖 URL 里的仓库名匹配。
+# 与发布流程之间唯一的契约是「tag = v$VERSION、asset 名 = singbox.sh」，
+# .github/workflows/release.yml 照着同一条约定写。
+SELF_REPO="${SB_SELF_REPO:-lzyMeta/macos-singbox-client-helper}"
+GH_SELF_API="https://api.github.com/repos/${SELF_REPO}/releases/latest"
+GH_SELF_API_REPO="https://api.github.com/repos/${SELF_REPO}"
+GH_SELF_DL="https://github.com/${SELF_REPO}/releases/download"
+GH_SELF_RELEASES="https://github.com/${SELF_REPO}/releases/latest"
 
 # 前缀式镜像：把完整的 github 链接接在后面即可。
 # 这类站点更替频繁，脚本一律先探测再用，探不通就换下一个。
@@ -71,6 +108,17 @@ QUIET=0
 DRY=0
 TMPFILES=()
 SUDO_KEEPALIVE_PID=""
+# 已持有互斥锁。acquire_lock 要可重入：cmd_update 持锁后还会经 cmd_restart
+# 调到 cmd_stop / cmd_start，那几处也要取锁，不可重入就会自己把自己 die 掉。
+#
+# ⚠️ 阶段 S 的 exec 会带 SB_LOCK_INHERIT=1 进来。exec **保留 PID**，
+# 不认这个变量的话，新进程会读 LOCKDIR/pid、kill -0 判活，认定「另一个实例
+# 正在运行」—— 而那个 PID 就是它自己，于是等 3 轮然后 die，且此时脚本已经换过了。
+# 锁文件里存的 PID 在 exec 后依然是对的，不必删了重建，也就没有竞态窗口。
+LOCK_HELD="${SB_LOCK_INHERIT:-0}"
+# 脚本自己拉起的后台 sing-box（install 第 5 步的前台试跑、update 阶段 1 的沙箱）。
+# 不登记进来的话，Ctrl-C 时 cleanup 认不出它们，会留下占着 TUN 或沙箱端口的孤儿。
+BG_PIDS=()
 DEBUG_WAS_LOADED=0
 DEBUG_RESTORED=0
 
@@ -102,6 +150,10 @@ die()  { bad "$*"; exit 1; }
 # 两档都不许拿 warn 打发过去。warn 不计数，于是「测不了」和「测过了」在终端上长得
 # 一模一样、退出码都是 0——那正是这套分档要消除的东西。cmd_verify 里凡是打 ✗ 的
 # 分支都必须走 vbad / vpbad，否则失败会被函数末尾那条语句的退出码盖掉。
+#
+# 唯二的例外是第 1 步（服务未运行、SOCKS 不通）：那两处用裸 bad 加硬编码 return 1，
+# 因为它们直接中断整个 cmd_verify，后面的计数根本不会被读到。退出码仍然是对的，
+# 但别照着它们的样子在别处写裸 bad —— 只要函数还会继续往下走，就必须计数。
 VERIFY_BAD=0
 VERIFY_POLICY_BAD=0
 vbad()  { VERIFY_BAD=$((VERIFY_BAD + 1)); bad "$*"; }
@@ -113,6 +165,13 @@ vpbad() { VERIFY_POLICY_BAD=$((VERIFY_POLICY_BAD + 1)); bad "$*"; }
 cleanup() {
   local rc=$?
   [ -n "$SUDO_KEEPALIVE_PID" ] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null
+  # 自己拉起的后台内核。只 TERM，绝不 KILL——强杀会留下残留路由。
+  # sudo 拉起的那个 pid 是 sudo 自己，信号由它转发给子进程。
+  local p
+  for p in ${BG_PIDS[@]+"${BG_PIDS[@]}"}; do
+    [ -n "$p" ] && kill -0 "$p" 2>/dev/null && \
+      { sudo -n kill -TERM "$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null; }
+  done
   for f in ${TMPFILES[@]+"${TMPFILES[@]}"}; do [ -n "$f" ] && rm -rf "$f" 2>/dev/null; done
   [ -d "$LOCKDIR" ] && [ "$(cat "$LOCKDIR/pid" 2>/dev/null)" = "$$" ] && rm -rf "$LOCKDIR"
   return $rc
@@ -125,8 +184,23 @@ mktmpd() { local t; t=$(mktemp -d) || die "无法创建临时目录"; TMPFILES+=
 # 不支持 sb-XXXXXX.json 这种后缀写法，所以改为「临时目录 + 固定文件名」。
 mktmp_named() { local d; d=$(mktmpd); printf '%s/%s' "$d" "${1:-tmp.json}"; }
 
+# 要留给用户事后查看、因而**不能**被 cleanup 删掉的文件（编辑失败的配置、doctor 转储）。
+# 这些内容含真实订阅地址、节点凭据、访问过的域名，不能像以前那样按
+# /tmp/<可预测名字> 直接落盘 —— 默认 umask 022 下那是 0644，同机任何用户都能读，
+# 而 /tmp 还是 world-writable（可被预置符号链接）。mktemp -d 给的是 0700。
+keep_path() {
+  local d; d=$(mktemp -d "/tmp/singbox-keep-XXXXXX") || return 1
+  chmod 700 "$d" 2>/dev/null
+  printf '%s/%s' "$d" "${1:-keep}"
+}
+
 # 防并发：两个实例同时改配置或加载服务会出错
 acquire_lock() {
+  # 可重入：同一个进程再次调用直接放行。嵌套调用链确实存在——
+  # cmd_update / _sb_rollback_to_prev → cmd_restart → cmd_stop / cmd_start。
+  # 不这样做的话，锁里存的 $$ 会让 kill -0 判活成功、走不到残留清理分支，
+  # 于是自己等自己，6 秒后 die，而那时二进制可能已经换掉了。
+  [ "$LOCK_HELD" = 1 ] && return 0
   local tries=0
   while ! mkdir "$LOCKDIR" 2>/dev/null; do
     local pid; pid=$(cat "$LOCKDIR/pid" 2>/dev/null)
@@ -138,6 +212,7 @@ acquire_lock() {
     info "等待另一个实例结束…"; sleep 2
   done
   echo "$$" > "$LOCKDIR/pid"
+  LOCK_HELD=1
 }
 
 need_root() {
@@ -170,8 +245,22 @@ ask() {
 #=======================================================================
 # 前置检查
 #=======================================================================
+# 只跑在 macOS 上。这不是「还没适配」，是产品边界：服务管理靠 launchd（launchctl +
+# LaunchDaemon plist）、网络与 DNS 靠 networksetup / scutil / dscacheutil、
+# 配置校验靠 plutil —— 这些在 Windows 与 Linux 上一个都不存在，换平台等于另写一个程序。
+# 所以这里只求拒绝得清楚：点名当前系统，说明缺的是什么。
 check_platform() {
-  [ "$(uname -s)" = Darwin ] || die "本脚本仅适用于 macOS"
+  local sys; sys=$(uname -s 2>/dev/null)
+  [ "$sys" = Darwin ] && return 0
+  bad "本脚本只支持 macOS，当前系统是 ${sys:-未知}"
+  case "$sys" in
+    Linux)      info "WSL 与 Linux 上没有 launchd / networksetup —— 用 systemd 单元自己起 sing-box" ;;
+    MINGW*|MSYS*|CYGWIN*)
+                info "Windows 上没有 launchd / networksetup —— 用 sing-box 官方的 Windows 版与服务安装方式" ;;
+    *)          info "服务管理依赖 launchd，网络与 DNS 依赖 networksetup / scutil，本平台都没有" ;;
+  esac
+  info "内核本身是跨平台的，跨不过去的是这套系统层集成：$GH_RELEASES"
+  exit 1
 }
 
 check_deps() {
@@ -189,13 +278,33 @@ require_installed() {
   [ -f "$CFG" ] || die "未找到配置 $CFG —— 先运行：$(basename "$0") install"
 }
 
+# 当前 shell 是否跑在 Rosetta 2 的翻译层里。
+# 真机实测的键语义：Intel 上 sysctl.proc_translated **不存在**（sysctl 退出 1）；
+# Apple Silicon 上它存在，原生为 0、被翻译时为 1。
+is_translated() { [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = 1 ]; }
+
+# 硬件是不是 Apple Silicon。hw.optional.arm64 在 Intel 上同样不存在。
+is_apple_silicon() { [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = 1 ]; }
+
+# 该装哪个架构的内核。
+#
+# ⚠️ 不能只看 `uname -m`：它报的是**当前进程**的架构，不是硬件的。
+# Apple Silicon 上被 Rosetta 翻译的 shell 里（Rosetta 方式打开的终端、x86_64 的
+# Homebrew bash、arch -x86_64 bash……）它会说 x86_64，于是我们会在 ARM 机器上装
+# Intel 内核——一个常驻的网络路径守护进程被塞进翻译层，而且 cmd_update 走同一个
+# 函数，会把这个错误一直续下去。硬件判据只有 hw.optional.arm64 一条。
 detect_arch() {
+  is_apple_silicon && { echo arm64; return 0; }
   case "$(uname -m)" in
     arm64)  echo arm64 ;;
     x86_64) echo amd64 ;;
     *)      echo "" ;;
   esac
 }
+
+# 合法的架构取值。放在这里是为了让 install --arch 能在动手之前就否掉错的，
+# 而不是一路拼出 sing-box-<版本>-darwin-foo.tar.gz 再靠 404 失败。
+arch_valid() { case "${1:-}" in amd64|arm64) return 0 ;; *) return 1 ;; esac; }
 
 running() { pgrep -x sing-box >/dev/null 2>&1; }
 daemon_loaded() { sudo launchctl print "$LABEL" >/dev/null 2>&1; }
@@ -254,10 +363,47 @@ human_size() {
   else printf '%s B' "$b"; fi
 }
 
+#-----------------------------------------------------------------------
+# 日志体积
+#
+# plist 把 stdout/stderr 直接指向文件，launchd 只管往里写，不轮转、不封顶。
+# 实测能涨到几百 MB 而没有任何命令提过一句——「失控」的前提是没人看得见。
+#
+# ⚠️ 回收只能**原地截断**，不能 rename / rm 后重建。
+# StandardErrorPath 那个 fd 是 launchd 打开、dup2 到子进程 fd 2 上的：
+# 换了 inode，守护进程就一直往那个已经没有名字的旧文件里写——磁盘一点收不回来，
+# 而且从此再也看不到新日志。这也是不给它配 newsyslog 的原因：
+# macOS 的 newsyslog 只会 rename + 新建（man newsyslog.conf 的 flags 里
+# B/C/D/G/J/N/U/Z 没有一个是截断），装上去等于装了一个看着在管、实际不工作的东西。
+#-----------------------------------------------------------------------
+# 单个文件的字节数，读不到就是 0
+log_bytes() {
+  [ -f "$1" ] || { printf 0; return 0; }
+  local n; n=$(wc -c < "$1" 2>/dev/null | tr -d ' ')
+  printf '%s' "${n:-0}"
+}
+
+# 两个日志文件的总字节数
+log_total_bytes() {
+  printf '%s' "$(( $(log_bytes "$LOGFILE") + $(log_bytes "$ERRFILE") ))"
+}
+
+# 超过阈值就打一条告警并指路。没超就什么都不说。被 status 与 doctor 共用。
+# 返回 0 = 超了。
+log_size_warn() {
+  local total limit
+  total=$(log_total_bytes)
+  limit=$(( LOG_WARN_MB * 1024 * 1024 ))
+  [ "$total" -gt "$limit" ] || return 1
+  warn "日志占用 $(human_size "$total")（阈值 ${LOG_WARN_MB} MB）—— launchd 不会自己轮转"
+  info "回收：$(basename "$0") logs truncate（原地截断，不重启服务）"
+  return 0
+}
+
 # 带镜像回退的下载：download <目标文件> <github原始URL> [描述]
 # 直连优先；失败则逐个试镜像；成功的镜像会被记住供后续使用
 download() {
-  local out="$1" url="$2" desc="${3:-文件}"
+  local out="$1" url="$2" desc="${3:-文件}" want_sha="${4:-}"
 
   # 进度条走 stderr。之前整条命令带了 2>/dev/null，把进度条也吞掉了。
   local -a opts=(-fL --connect-timeout "$CONNECT_TIMEOUT" --max-time 600
@@ -281,12 +427,13 @@ download() {
     i=$((i+1))
     if [ "$i" = 1 ]; then label="直连 github.com"; else label="镜像 $(printf '%s' "$src" | cut -d/ -f1-3)"; fi
 
-    printf '    [%d/%d] 探测 %s … ' "$i" "${#sources[@]}" "$label"
+    # 这几条以前是裸 printf，-q 之下照样刷屏。ok/info/dim 都带 QUIET 前缀，这里也要带。
+    [ "$QUIET" = 1 ] || printf '    [%d/%d] 探测 %s … ' "$i" "${#sources[@]}" "$label"
     if ! probe_url "$src" "$PROBE_TIMEOUT"; then
-      printf '%s不通%s\n' "$C_DIM" "$C_N"
+      [ "$QUIET" = 1 ] || printf '%s不通%s\n' "$C_DIM" "$C_N"
       continue
     fi
-    printf '%s可用%s\n' "$C_OK" "$C_N"
+    [ "$QUIET" = 1 ] || printf '%s可用%s\n' "$C_OK" "$C_N"
 
     info "下载${desc} ← ${label}"
     t0=$(date +%s)
@@ -294,6 +441,19 @@ download() {
       t1=$(date +%s)
       sz=$(wc -c < "$out" 2>/dev/null | tr -d ' ')
       ok "下载完成：$(human_size "${sz:-0}")，耗时 $((t1-t0))s"
+      if [ -n "$want_sha" ]; then
+        local got; got=$(shasum -a 256 "$out" 2>/dev/null | awk '{print $1}')
+        if [ "$got" != "$want_sha" ]; then
+          bad "sha256 不匹配 —— 丢弃这一份"
+          info "期望 $want_sha"
+          info "实得 ${got:-（算不出）}"
+          rm -f "$out" 2>/dev/null
+          if [ "$i" = 1 ]; then die "直连 github.com 下来的文件都对不上，别再往下走了"; fi
+          warn "换下一个来源"
+          continue
+        fi
+        ok "sha256 校验通过"
+      fi
       if [ "$i" -gt 1 ]; then
         prefs_set mirror "$(printf '%s' "$src" | cut -d/ -f1-3)" >/dev/null 2>&1 \
           && dim "已记住该镜像，后续优先使用（直连仍排在最前）"
@@ -311,26 +471,74 @@ download() {
 }
 
 # 取最新版本号：API 直连 → API 走镜像 → 解析 releases/latest 的跳转地址
+#
+# latest_version [api_url] [releases_url]
+# 默认查 sing-box 内核；阶段 S 传自家 repo 的两个地址复用同一套镜像与兜底逻辑。
 latest_version() {
   local v m
-  v=$(curl -fsSL --connect-timeout "$CONNECT_TIMEOUT" --max-time "$NET_TIMEOUT" "$GH_API" 2>/dev/null \
+  local api="${1:-$GH_API}"
+  local rel="${2:-$GH_RELEASES}"
+  v=$(curl -fsSL --connect-timeout "$CONNECT_TIMEOUT" --max-time "$NET_TIMEOUT" "$api" 2>/dev/null \
       | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p' | head -1)
   [ -n "$v" ] && { printf '%s' "$v"; return 0; }
 
   for m in $(mirror_list); do
     printf '    查询版本 ← %s … ' "$m" >&2
     v=$(curl -fsSL --connect-timeout "$CONNECT_TIMEOUT" --max-time 12 \
-        "$(mirror_url "$m" "$GH_API")" 2>/dev/null \
+        "$(mirror_url "$m" "$api")" 2>/dev/null \
         | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p' | head -1)
     if [ -n "$v" ]; then printf '%s\n' "$v" >&2; printf '%s' "$v"; return 0; fi
     printf '%s无结果%s\n' "$C_DIM" "$C_N" >&2
   done
 
   # 最后一招：releases/latest 会 302 到 .../tag/vX.Y.Z
-  v=$(curl -fsIL --connect-timeout "$CONNECT_TIMEOUT" --max-time 15 "$GH_RELEASES" 2>/dev/null \
+  v=$(curl -fsIL --connect-timeout "$CONNECT_TIMEOUT" --max-time 15 "$rel" 2>/dev/null \
       | sed -n 's|.*location:.*/tag/v\([0-9][^[:space:]]*\).*|\1|Ip' | tail -1 | tr -d '\r')
   [ -n "$v" ] && { printf '%s' "$v"; return 0; }
   return 1
+}
+
+# 取某个 release 里某个 asset 的 sha256。拿不到就回空，由调用方决定降级还是硬失败。
+#
+# 上游 release 里确实没有 checksums.txt（1.14.0 的 167 个 asset 逐个看过），
+# 但 GitHub Releases API 的每个 asset 现在带 digest 字段（"sha256:<hex>"），
+# 校验值改从这里拿即可。macOS 自带 shasum -a 256，不引入新依赖。
+#
+# ⚠️ 这道校验能挡的是「传输损坏」和「单个镜像投毒」。
+# API 本身也可能是经镜像拿到的——那种情况下 digest 的可信度不高于那个镜像，
+# 挡不住「API 与文件出自同一个坏镜像」。别把它当成签名。
+asset_digest() {
+  # ⚠️ 别把 api 并进上面那条 local：bash 在执行 local 之前就把整行参数展开完了，
+  # 同一条语句里引用不到前面刚声明的变量，${ver#v} 会展开成空串，
+  # URL 变成 .../tags/v，取不到 digest —— 而调用方只会 warn 一句「取不到」照常下载，
+  # 整道校验就这么静默失效了。
+  local ver="$1" name="$2" body m api
+  # ⚠️ 同样别把它并进上面那条 local —— 理由见上面那段注释。
+  local repo_api="${3:-$GH_API_REPO}"
+  api="$repo_api/releases/tags/v${ver#v}"
+  body=$(curl -fsSL --connect-timeout "$CONNECT_TIMEOUT" --max-time "$NET_TIMEOUT" "$api" 2>/dev/null)
+  if [ -z "$body" ]; then
+    for m in $(mirror_list); do
+      body=$(curl -fsSL --connect-timeout "$CONNECT_TIMEOUT" --max-time 12 \
+             "$(mirror_url "$m" "$api")" 2>/dev/null)
+      [ -n "$body" ] && break
+    done
+  fi
+  [ -n "$body" ] || return 1
+  printf '%s' "$body" | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+want = sys.argv[1]
+for a in d.get("assets", []):
+    if a.get("name") == want:
+        dg = a.get("digest") or ""
+        if dg.startswith("sha256:"):
+            print(dg[7:])
+        break
+' "$name" 2>/dev/null
 }
 
 #-----------------------------------------------------------------------
@@ -395,10 +603,16 @@ resolve_editor() {
   return 1
 }
 
+# 备份当前配置。路径走 stdout，成败走返回码 —— 两者别混。
+# ⚠️ 之前最后一条语句是 printf，函数返回码恒为它的 0：sudo cp 失败（卷满、只读）
+# 时调用方照样往下走，把配置覆盖掉而没有任何备份。判据只能用 run 的返回码，
+# 不能用 [ -f "$bak" ] —— dry-run 下 run 返回 0 但文件本来就不该存在。
 backup_config() {
-  local bak="$CFG.$(date +%Y%m%d-%H%M%S).bak"
-  run "sudo cp '$CFG' '$bak'" && info "已备份：$bak"
+  local bak="$CFG.$(date +%Y%m%d-%H%M%S).bak" rc=0
+  run "sudo cp '$CFG' '$bak'" || rc=1
+  [ "$rc" = 0 ] && info "已备份：$bak"
   printf '%s' "$bak"
+  return $rc
 }
 
 # 只保留最近 N 份备份，避免无限堆积
@@ -407,7 +621,7 @@ prune_backups() {
   local n; n=$(ls -1t "$CFG".*.bak 2>/dev/null | wc -l | tr -d ' ')
   [ "${n:-0}" -le "$keep" ] && return 0
   ls -1t "$CFG".*.bak 2>/dev/null | tail -n +$((keep+1)) | while read -r f; do
-    sudo rm -f "$f"
+    run "sudo rm -f '$f'"
   done
   dim "已清理旧备份，保留最近 $keep 份"
 }
@@ -424,6 +638,7 @@ network_services() {
 # 所以停止 / 停用 / 卸载时要还原回路由器下发的地址。
 #-----------------------------------------------------------------------
 dns_backup_save() {
+  [ "$DRY" = 1 ] && { dim "[dry-run] 记录各网络服务当前 DNS 到 $DNS_BACKUP"; return 0; }
   mkdir -p "$PREFS_DIR" 2>/dev/null || return 1
   : > "$DNS_BACKUP"
   local svc d
@@ -535,11 +750,212 @@ dns_is_proxy_mode() {
   return 1
 }
 
+# dns_restore 的自定义地址分支会把 $target 不加引号地拼进 run()，而 run() 是 eval——
+# 不校验的话 `dns set '1.1.1.1; <命令>'` 会在 eval 阶段被执行。
+# 校验字符集而不是写严格 IP 正则：既容得下 IPv4 / IPv6 / 空格分隔的多个地址，
+# 又不会误伤合法输入。empty 是 networksetup 用来清空 DNS 的字面量，单独放行。
+_dns_addr_ok() {
+  local t
+  [ -n "${1:-}" ] || return 1
+  for t in $1; do
+    [ "$t" = empty ] && continue
+    case "$t" in
+      *[!0-9A-Fa-f.:]*) return 1 ;;
+      *[0-9A-Fa-f]*) ;;
+      *) return 1 ;;
+    esac
+  done
+  return 0
+}
+
 is_private_dns() {
   case "$1" in
     192.168.*|10.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|*"aren't any"*|"") return 0 ;;
     *) return 1 ;;
   esac
+}
+
+
+# 把一份脚本安装成 $LAUNCHER（默认 /usr/local/bin/singbox）。
+# 退路语义与内核的 $BIN / $BIN.prev 完全对称：旧的先存成 .prev，再让新的就位。
+#
+# ⚠️ 就位这一步必须是 mv（rename），不能用 cp / install 直接覆盖。
+# bash 是**边执行边按偏移量读脚本文件**的：cp 覆盖的是同一个 inode，正在跑的那个
+# 进程下一次读取会读到新文件的字节流、落在错误的偏移上 —— 症状是执行到一半冒出
+# 莫名其妙的语法错误，且只在「脚本更新自己」这一条路径上出现。mv 换的是目录项，
+# 旧 inode 被 unlink 但仍被打开着，当前进程读到的还是那一份完整的旧内容。
+# singbox-selfcheck.sh 第 13 项守着这一条。
+#
+# _install_launcher <源文件> [说明]
+_install_launcher() {
+  local src="$1"
+  local desc="${2:-singbox 命令}"
+  [ -f "$src" ] || { bad "找不到要安装的脚本：$src"; return 1; }
+
+  if [ "$DRY" = 1 ]; then
+    dim "[dry-run] 安装 ${desc} → ${LAUNCHER}（已存在则旧的先存成 ${LAUNCHER}.prev）"
+    return 0
+  fi
+
+  # 装一份语法就坏了的脚本，等于把用户的 singbox 命令弄死，而他下一次才会发现。
+  bash -n "$src" 2>/dev/null || { bad "脚本语法检查未通过，不安装：$src"; return 1; }
+
+  # 先在**目标所在的同一个文件系统**上落一份临时文件。mv 跨文件系统会退化成
+  # copy + unlink，那就又回到「覆盖同一个 inode」的老问题上了。
+  local staged="$LAUNCHER.new.$$"
+  sudo mkdir -p "$PREFIX/bin" || { bad "建不了 $PREFIX/bin"; return 1; }
+  sudo cp "$src" "$staged" || { bad "写不进 $PREFIX/bin"; return 1; }
+  sudo chmod 755 "$staged"
+  sudo xattr -d com.apple.quarantine "$staged" 2>/dev/null || true
+
+  if [ -f "$LAUNCHER" ]; then
+    sudo mv -f "$LAUNCHER" "$LAUNCHER.prev" || {
+      sudo rm -f "$staged"
+      bad "存不下旧的 ${LAUNCHER}.prev，不动 ${LAUNCHER}"
+      return 1
+    }
+  fi
+  sudo mv -f "$staged" "$LAUNCHER" || { bad "装不上 $LAUNCHER"; return 1; }
+  return 0
+}
+
+
+# 版本比较：a 严格大于 b 才返回 0。
+# ⚠️ 不能用 sort -V —— GNU 专有，自检第 4 项直接禁掉它。
+# 按 . 切三段做数值比较，非数字段一律当 0（1.2.0-rc1 的第三段按 0 算，
+# 于是预发布不会被判成比正式版新）。
+ver_gt() {
+  local a="${1#v}"
+  local b="${2#v}"
+  local i av bv
+  for i in 1 2 3; do
+    av=$(printf '%s' "$a" | cut -d. -f"$i")
+    bv=$(printf '%s' "$b" | cut -d. -f"$i")
+    case "$av" in ''|*[!0-9]*) av=0 ;; esac
+    case "$bv" in ''|*[!0-9]*) bv=0 ;; esac
+    [ "$av" -gt "$bv" ] && return 0
+    [ "$av" -lt "$bv" ] && return 1
+  done
+  return 1
+}
+
+# 阶段 S：脚本更新自己。永远排在内核三阶段**之前** —— 这样内核升级用的总是最新的
+# 升级逻辑，而历史上出问题的恰恰是升级逻辑本身而不是内核。
+#
+# 这个函数的返回值不影响内核阶段：取不到新版（无 release、GitHub 与所有镜像
+# 均不可达）、下载失败、语法不过，一律 warn 一句就返回 0 照升内核。脚本更新
+# 不该有权阻断用户真正要的那件事，何况内核升级自带沙箱与回滚。
+#
+# 换成功且当前进程就是从 $LAUNCHER 启动的话，本函数以 exec 收尾，不返回。
+_self_update() {
+  step "阶段 S/3　脚本自更新"
+
+  if [ "$DRY" = 1 ]; then
+    dim "[dry-run] 查 ${SELF_REPO} 的 latest release，与本地 v${VERSION} 比对"
+    dim "[dry-run] 远端更新则下载 singbox.sh、bash -n、原子替换 ${LAUNCHER}，再 exec 新脚本继续"
+    return 0
+  fi
+
+  local new
+  new=$(latest_version "$GH_SELF_API" "$GH_SELF_RELEASES") || new=""
+  if [ -z "$new" ]; then
+    warn "取不到脚本的最新版本（${SELF_REPO} 还没有 release，或 GitHub 与所有镜像均不可达）"
+    info "跳过脚本自更新，继续升级内核"
+    return 0
+  fi
+  new="${new#v}"
+  info "脚本：本地 v${VERSION}，远端 v${new}"
+
+  # 只有严格大于才升。相等或更小一律不动 —— release 被回退时把用户降级，
+  # 等于把已经修好的 bug 再装回去。
+  if ! ver_gt "$new" "$VERSION"; then
+    ok "脚本已是最新（v${VERSION}）"
+    return 0
+  fi
+
+  local tmpd; tmpd=$(mktmpd)
+  local want_sha; want_sha=$(asset_digest "$new" "singbox.sh" "$GH_SELF_API_REPO") || want_sha=""
+  if [ -n "$want_sha" ]; then dim "校验值来自 GitHub API：${want_sha}"
+  else warn "取不到 singbox.sh 的 sha256 —— 本次不做完整性校验"; fi
+
+  # ⚠️ 必须在子 shell 里调 download。它在「直连下来的文件 sha256 对不上」那一档
+  # 走的是 die 而不是 return（见 download 内部 `[ "$i" = 1 ] && die`），
+  # 那个 die 会从这里的 `if !` 底下穿过去，把整条 update 打死在阶段 S ——
+  # 阶段 0-3 一个字节都跑不到，而那正是「脚本更新不该阻断用户真正要的那件事」
+  # 要防的。套一层 ( ) 让 die 只杀子 shell，退出码照常回到这里。
+  #
+  # 子 shell 是安全的：bash 3.2 的 ( ) **不继承 EXIT trap**（实测过），所以
+  # cleanup 不会在子 shell 退出时跑 —— 否则它会把 $tmpd 连同刚下好的文件、
+  # 以及本进程持有的 $LOCKDIR 一起删掉（子 shell 里 $$ 仍是父进程的 PID）。
+  # download 只往 $out 写文件，不往 TMPFILES 里登记东西，没有别的状态要带回来。
+  if ! ( download "$tmpd/singbox.sh" "$GH_SELF_DL/v${new}/singbox.sh" "脚本 v$new" "$want_sha" ); then
+    warn "脚本 v${new} 下载或校验失败，跳过自更新，继续升级内核"
+    return 0
+  fi
+
+  # 装一份语法就坏了的脚本等于把用户的 singbox 命令弄死，而他下一次才会发现。
+  # _install_launcher 里还会再验一道，这里先验是为了能说清「为什么没换」。
+  if ! bash -n "$tmpd/singbox.sh" 2>/dev/null; then
+    warn "下载到的 singbox.sh 语法检查未通过，不替换 —— 继续升级内核"
+    return 0
+  fi
+
+  local had_launcher=0
+  [ -f "$LAUNCHER" ] && had_launcher=1
+
+  if ! _install_launcher "$tmpd/singbox.sh" "脚本 v$new"; then
+    warn "脚本没换上，继续升级内核"
+    return 0
+  fi
+  ok "singbox 命令已更新到 v${new}（${LAUNCHER}）"
+  [ "$had_launcher" = 1 ] || \
+    warn "启动器原本不在 ${LAUNCHER}，已按当前 --prefix 装入"
+
+  # 当前进程是不是就是从 $LAUNCHER 启动的。
+  # 两边都过一次 cd + pwd，把 $0 这类相对路径（`./singbox.sh`）绝对化之后再比 ——
+  # 不绝对化的话，从 $LAUNCHER 启动的进程也会因为写法不同而被判成「仓库副本」。
+  #
+  # ⚠️ 这**不解析符号链接**：bash 的 cd 与 pwd 默认都是 -L 逻辑路径，
+  # `cd /var/tmp && pwd` 回的仍是 /var/tmp 而不是 /private/var/tmp。
+  # 所以 $PREFIX/bin 若是一条符号链接，两边字符串仍可能不等，本该 re-exec 的
+  # 场景会退化成「只更新不重启」—— 那是安全的降级（脚本已经换好了，只是这一次
+  # 继续用旧的跑完），不是数据损坏。真要解链接得手写循环读 `ls -l`：
+  # readlink -f 在 macOS 上不存在，也被自检第 4 项禁了，为这个边缘场景不值当。
+  # 默认 --prefix /usr/local 下 /usr/local/bin 不是符号链接，无实际影响。
+  local self_dir; self_dir=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
+  local self_src="${self_dir:-$(dirname "$0")}/$(basename "$0")"
+  local lch_dir; lch_dir=$(cd "$(dirname "$LAUNCHER")" 2>/dev/null && pwd)
+  local lch_real="${lch_dir:-$(dirname "$LAUNCHER")}/$(basename "$LAUNCHER")"
+
+  if [ "$self_src" != "$lch_real" ]; then
+    warn "你跑的是 ${self_src}，本次更新的是 ${LAUNCHER}"
+    info "这份副本请自行 git pull 更新。不重新执行 —— 继续用当前脚本升级内核"
+    return 0
+  fi
+
+  # ⚠️ exec 不触发 EXIT trap，TMPFILES 里的临时目录会泄漏。走之前显式清掉。
+  local f
+  for f in ${TMPFILES[@]+"${TMPFILES[@]}"}; do [ -n "$f" ] && rm -rf "$f" 2>/dev/null; done
+  TMPFILES=()
+
+  # ⚠️ SUDO_KEEPALIVE_PID 在这里丢掉，但那个后台循环的条件是 kill -0 $$，
+  # exec 后 PID 没变，所以它继续活着、票据继续续期（这是好事）。新进程不知道
+  # 它存在，会再起一个 —— 多一个循环无害且随进程退出自终。别当成 bug 去「修」。
+  ok "换上新脚本，重新执行以继续升级内核"
+
+  # ⚠️ 开关走环境变量，不走命令行 flag。顶层 dispatch 对未知参数一律 die，
+  # 用 --skip-self 这种 flag 就意味着**旧脚本 exec 新脚本时，新脚本必须认识
+  # 旧脚本传的每一个参数**；哪天参数改名，升级路径当场断在「未知参数」上，
+  # 而这条路径恰恰是用来修 bug 的。未知环境变量不会让谁 die。
+  export SB_SELF_UPDATED=1
+  export SB_LOCK_INHERIT=1
+
+  local argv
+  argv=()
+  [ "$ASSUME_YES" = 1 ] && argv+=(-y)
+  [ "$QUIET" = 1 ] && argv+=(-q)
+  argv+=(--prefix "$PREFIX" update)
+  exec "$LAUNCHER" ${argv[@]+"${argv[@]}"}
 }
 
 #=======================================================================
@@ -549,25 +965,31 @@ cmd_install() {
   local src_cfg="" want_ver="" arch="" force=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --config)  src_cfg="${2:-}"; shift 2 ;;
-      --version) want_ver="${2:-}"; shift 2 ;;
-      --arch)    arch="${2:-}"; shift 2 ;;
+      --config)  src_cfg="${2:-}"; [ -n "$src_cfg" ] || die "--config 需要参数，如 --config ./config.json"; shift 2 ;;
+      --version) want_ver="${2:-}"; [ -n "$want_ver" ] || die "--version 需要参数，如 --version 1.14.0"; shift 2 ;;
+      --arch)    arch="${2:-}";    [ -n "$arch" ]    || die "--arch 需要参数：amd64 | arm64"
+                 arch_valid "$arch" || die "--arch 取值无效：${arch}（只接受 amd64 | arm64）"; shift 2 ;;
       --force)   force=1; shift ;;
       *) die "install: 未知参数 $1" ;;
     esac
   done
 
   check_deps
-  acquire_lock
-  need_root
+  acquire_lock          # 不弹密码，要尽早防并发
 
   #--- 0 环境 ---
-  step "0/7  环境检查"
+  step "0/8  环境检查"
   local host_arch; host_arch=$(detect_arch)
   [ -n "$host_arch" ] || die "不支持的 CPU 架构：$(uname -m)"
   [ -n "$arch" ] || arch="$host_arch"
-  [ "$arch" = "$host_arch" ] || warn "指定架构 $arch 与本机 $host_arch 不符"
-  info "架构：$(uname -m) → darwin-$arch"
+  [ "$arch" = "$host_arch" ] || warn "指定架构 $arch 与本机硬件 $host_arch 不符"
+  # 被 Rosetta 翻译时 uname -m 会说 x86_64，而我们按硬件选了 arm64 —— 这两个数
+  # 对不上是正常的，但必须说出来，否则用户没法判断这台机器到底装了什么。
+  if is_translated; then
+    warn "当前 shell 跑在 Rosetta 2 翻译层里（uname -m 报 $(uname -m)，实际硬件是 ${host_arch}）"
+    info "按硬件装 darwin-${host_arch}；要原生 shell 的话：arch -arm64 zsh"
+  fi
+  info "架构：硬件 ${host_arch} → darwin-$arch"
   info "安装前缀：$PREFIX"
 
   # 配置的静态检查提前到这里：别等下载完内核才发现占位符没替换
@@ -590,6 +1012,10 @@ cmd_install() {
   json_valid "$src_cfg" || die "JSON 语法错误：python3 -m json.tool '$src_cfg' 可看具体位置"
   ok "配置：占位符已替换、JSON 语法正确"
 
+  # need_root 排在这之后：上面那几项都是零成本检查，没道理让用户先输一次密码
+  # 才被告知「未找到配置文件」。
+  need_root
+
   local need_install=1
   if [ -x "$BIN" ]; then
     info "已安装：$("$BIN" version 2>/dev/null | head -1)"
@@ -599,7 +1025,7 @@ cmd_install() {
   fi
 
   #--- 1 内核 ---
-  step "1/7  安装 sing-box 内核"
+  step "1/8  安装 sing-box 内核"
   if [ "$need_install" = 1 ]; then
     if [ -z "$want_ver" ]; then
       info "查询最新版本…"
@@ -616,21 +1042,29 @@ cmd_install() {
     tarball="sing-box-${want_ver}-darwin-${arch}.tar.gz"
     url="$GH_DL/v${want_ver}/${tarball}"
     if [ "$DRY" = 0 ]; then
-      download "$tmpd/$tarball" "$url" "内核 v$want_ver" \
+      local want_sha; want_sha=$(asset_digest "$want_ver" "$tarball") || want_sha=""
+      if [ -n "$want_sha" ]; then dim "校验值来自 GitHub API：${want_sha}"
+      else warn "取不到该 asset 的 sha256（老 release 无 digest 字段，或 API 不可达）—— 本次不做完整性校验"; fi
+      download "$tmpd/$tarball" "$url" "内核 v$want_ver" "$want_sha" \
         || die "下载失败（版本号是否正确？）"
       tar xzf "$tmpd/$tarball" -C "$tmpd" || die "解压失败，文件可能不完整"
       local extracted="$tmpd/sing-box-${want_ver}-darwin-${arch}/sing-box"
       [ -f "$extracted" ] || die "压缩包结构异常，未找到 sing-box 可执行文件"
       sudo mkdir -p "$PREFIX/bin"
-      # 已有旧版则先备份，便于失败回滚
-      [ -x "$BIN" ] && sudo cp "$BIN" "$BIN.prev"
+      # 已有旧版则先备份，便于失败回滚。
+      # ⚠️ 不要用 $BIN.prev 当这个临时回滚点：那是 update 留给 rollback 的、
+      # 「半小时后才发现问题」时唯一能退回去的一份。之前这里先 cp 覆盖它、
+      # 末尾又 rm -f 掉，于是 update 成功后再跑一次 install，rollback 就没东西可退了。
+      # 存进 $tmpd（mktmpd 建的，已登记进 TMPFILES 自动回收），既不碰 .prev，
+      # 中途崩溃也不会在 /usr/local/bin 留残留。
+      local oldbin="$tmpd/sing-box.old"
+      [ -x "$BIN" ] && sudo cp "$BIN" "$oldbin"
       sudo install -m 755 "$extracted" "$BIN" || die "安装失败，检查 $PREFIX/bin 写权限"
       sudo xattr -d com.apple.quarantine "$BIN" 2>/dev/null || true
       "$BIN" version >/dev/null 2>&1 || {
-        [ -f "$BIN.prev" ] && sudo mv "$BIN.prev" "$BIN"
+        [ -f "$oldbin" ] && sudo install -m 755 "$oldbin" "$BIN"
         die "新安装的二进制无法执行，已回滚"
       }
-      sudo rm -f "$BIN.prev"
     else
       dim "[dry-run] 下载并安装 $url"
     fi
@@ -655,13 +1089,29 @@ cmd_install() {
       || dim "不带 with_clash_api，clash_api 配置段会失效"
   fi
 
-  #--- 2 系统层 ---
-  step "2/7  macOS 系统层准备"
+  #--- 2 singbox 命令 ---
+  step "2/8  安装 singbox 命令"
+  info "装到 $LAUNCHER —— 它已经在默认 PATH 里，不必改 ~/.zshrc"
+  local self_src
+  self_src="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+  if _install_launcher "$self_src" "singbox 命令"; then
+    [ "$DRY" = 1 ] || ok "已安装到 $LAUNCHER"
+    case ":$PATH:" in
+      *":$PREFIX/bin:"*) ;;
+      *) warn "$PREFIX/bin 不在你的 PATH 里 —— 要用全路径 ${LAUNCHER}，或把该目录加进 PATH" ;;
+    esac
+  else
+    # 装不上不该拖垮整次安装：内核已经就位，用户仍可用仓库副本跑
+    warn "singbox 命令没装上 —— 不影响本次安装，之后重跑 install 可再试"
+  fi
+
+  #--- 3 系统层 ---
+  step "3/8  macOS 系统层准备"
   info "这三项配置文件管不了；不做的话后面验证一定过不去，而症状不指向真正原因。"
   _sysprep
 
-  #--- 3 配置 ---
-  step "3/7  放置配置文件"
+  #--- 4 配置 ---
+  step "4/8  放置配置文件"
   # 工作副本，避免直接改用户的源文件
   local work; work=$(mktmp)
   cp "$src_cfg" "$work"
@@ -706,7 +1156,7 @@ PY
 
   run "sudo mkdir -p '$ETC'"
   if [ -f "$CFG" ] && ! cmp -s "$work" "$CFG"; then
-    backup_config >/dev/null
+    backup_config >/dev/null || die "备份现有配置失败，未改动 $CFG"
     prune_backups 10
   fi
   run "sudo cp '$work' '$CFG'"
@@ -714,8 +1164,8 @@ PY
   run "sudo chmod 644 '$CFG'"
   ok "配置已就位：$CFG"
 
-  #--- 4 校验 ---
-  step "4/7  静态校验"
+  #--- 5 校验 ---
+  step "5/8  静态校验"
   if [ "$DRY" = 0 ]; then
     local chklog; chklog=$(mktmp)
     if sudo "$BIN" check -c "$CFG" >"$chklog" 2>&1; then
@@ -732,8 +1182,8 @@ PY
     fi
   fi
 
-  #--- 5 前台试跑 ---
-  step "5/7  前台试跑"
+  #--- 6 前台试跑 ---
+  step "6/8  前台试跑"
   if [ "$DRY" = 0 ] && ask "前台跑 25 秒，观察规则集下载与 TUN 建立？" y; then
     _stop_all_instances
     local rlog; rlog=$(mktmp)
@@ -742,6 +1192,9 @@ PY
     sudo mkdir -p "$ETC"
     sudo "$BIN" run -D "$ETC" -c "$CFG" >"$rlog" 2>&1 &
     local rpid=$!
+    # 登记给 cleanup：这一跑用的是带 TUN 的真配置，倒计时里按 Ctrl-C 而没人收尸的话，
+    # 留下的孤儿会一直占着虚拟网卡和路由表——正是下面那句注释在防的「残留路由」。
+    BG_PIDS+=("$rpid")
     local i
     for i in $(seq 25 -1 1); do
       kill -0 "$rpid" 2>/dev/null || break
@@ -753,14 +1206,17 @@ PY
     local w=0
     while kill -0 "$rpid" 2>/dev/null && [ $w -lt 8 ]; do sleep 1; w=$((w+1)); done
     kill -0 "$rpid" 2>/dev/null && warn "进程未在 8 秒内退出，可能残留路由；必要时重启系统"
+    # $rpid 是 sudo 自己的 pid，不是 sing-box 的；判活要以进程名为准复核一遍。
+    running && warn "sing-box 仍在前台实例中运行 —— 回那个终端 Ctrl-C，不要 kill -9"
+    BG_PIDS=()
 
     info "启动日志（后 20 行）："
     tail -20 "$rlog" | sed 's/^/      /'
     _diagnose_log "$rlog" && ok "试跑未发现致命问题"
   fi
 
-  #--- 6 服务 ---
-  step "6/7  安装 LaunchDaemon"
+  #--- 7 服务 ---
+  step "7/8  安装 LaunchDaemon"
   _stop_all_instances
   run "sudo launchctl bootout '$LABEL' 2>/dev/null || true"
 
@@ -809,12 +1265,21 @@ PLISTEOF
     fi
   fi
 
-  #--- 7 验证 ---
-  step "7/7  验证"
-  [ "$DRY" = 0 ] && cmd_verify || true
+  #--- 8 验证 ---
+  step "8/8  验证"
+  # install 的退出码保持 0：验证没过不等于安装没成。但也不能让「安装完成」这句
+  # 全绿的口吻盖过上面刚打的那一堆 ✗ —— 按 verify 的两档结果分叉措辞。
+  local vrc=0
+  [ "$DRY" = 0 ] && { cmd_verify || vrc=$?; }
 
   echo
-  printf '%s安装完成。%s\n' "$C_B" "$C_N"
+  case "$vrc" in
+    0) printf '%s安装完成。%s\n' "$C_B" "$C_N" ;;
+    1) printf '%s安装完成，但验证的链路档没过（见上面的 ✗）。%s\n' "$C_B" "$C_N"
+       info "节点参数或链路的问题，配置改不了服务端；先按 verify 第 1、2 步的提示查" ;;
+    *) printf '%s安装完成，但验证的策略档没过（见上面的 ✗）。%s\n' "$C_B" "$C_N"
+       info "路由策略或环境的问题；跑 rules 与 debug 看规则命中" ;;
+  esac
   info "日常管理：$(basename "$0") {status|verify|syscheck|restart|logs|rules|doctor}"
   warn "还有两件事要自己做："
   info "  1. 关闭浏览器内置 DoH（Chrome: chrome://settings/security）"
@@ -856,7 +1321,11 @@ _sysprep() {
   done <<< "$svcs"
   if [ "$need_dns" = 1 ]; then warn "有服务的 DNS 是内网地址或未设置"; fi
   if ask "把所有服务的 DNS 设为 ${PROXY_DNS}？（反正会被内核劫持，只需保证不是内网地址）" y; then
-    dns_backup_save
+    # 只在没有备份时记一次。sysprep 的定位就是「换网络、插网卡后重跑」，
+    # 而那时 DNS 多半已经是 $PROXY_DNS 了——无条件重记会把当初那份真正的原值
+    # （比如内网 Pi-hole 地址）按 empty 覆盖掉，再也还原不回去。
+    # 判据与 cmd_start / cmd_dns proxy 保持一致。
+    [ -f "$DNS_BACKUP" ] || dns_backup_save
     dns_apply_proxy
     ok "已设置并清空 DNS 缓存"
     dim "stop / disable / uninstall 时可一键还原"
@@ -917,7 +1386,10 @@ _diagnose_log() {
   }
   grep -qi "unsupported.*stack\|gvisor" "$f" && grep -qi "not built\|unsupported" "$f" && {
     bad "协议栈不受支持：内核可能不带 with_gvisor，把配置里 stack 改成 system"; fatal=1; }
-  local nf; nf=$(grep -ci "failed to download rule.set\|rule.set.*fail" "$f" 2>/dev/null || echo 0)
+  # ⚠️ 别写成 `grep -c … || echo 0`：grep -c 无匹配时**已经打印了 0** 并返回 1，
+  # 那个 || 会再追加一个，nf 变成 "0\n0"，后面的 [ -gt ] 直接把
+  # `[: 0\n0: integer expression expected` 打到用户终端——而且只在日志干净时发生。
+  local nf; nf=$(grep -ci "failed to download rule.set\|rule.set.*fail" "$f" 2>/dev/null); nf="${nf:-0}"
   if [ "${nf:-0}" -gt 0 ]; then
     warn "有规则集下载失败 —— 不阻止启动，但那些规则永远不命中"
     grep -i "rule.set" "$f" | grep -i fail | head -8 | sed 's/^/        /' >&2
@@ -931,11 +1403,19 @@ _diagnose_log() {
 #=======================================================================
 cmd_status() {
   require_installed
+  # status 从不 need_root，但 daemon_loaded 与下面的 lsof 都要 sudo。
+  # 没有票据时：daemon_loaded 的密码提示被 2>&1 吞掉 → 终端无提示卡住；
+  # 非交互下 sudo 直接失败 → 明明在跑的服务被渲染成「LaunchDaemon 未加载」。
+  # 先无交互探一次，探不到就明说跳过，不要把「不知道」说成「没有」。
+  local can_sudo=1
+  sudo -n true 2>/dev/null || can_sudo=0
   step "服务状态"
   info "内核：$("$BIN" version 2>/dev/null | head -1)"
   if running; then ok "sing-box 运行中（PID $(pgrep -x sing-box | tr '\n' ' '))"
   else bad "sing-box 未运行"; fi
-  if daemon_loaded; then ok "LaunchDaemon 已加载"
+  if [ "$can_sudo" = 0 ]; then
+    warn "无 sudo 票据，跳过 LaunchDaemon 与监听端口检查（先跑一次 sudo -v 再来）"
+  elif daemon_loaded; then ok "LaunchDaemon 已加载"
   else warn "LaunchDaemon 未加载（当前可能是前台运行）"; fi
   [ -f "$PLIST" ] && ok "开机自启已配置" || warn "未安装 plist，重启后不会自动运行"
 
@@ -964,7 +1444,9 @@ except Exception: pass" 2>/dev/null)
 
   step "监听端口"
   local pid; pid=$(pgrep -x sing-box | head -1)
-  if [ -n "$pid" ]; then
+  if [ "$can_sudo" = 0 ]; then
+    dim "（无 sudo 票据，跳过）"
+  elif [ -n "$pid" ]; then
     sudo lsof -nP -iTCP -sTCP:LISTEN -a -p "$pid" 2>/dev/null \
       | awk 'NR>1{printf "      %-26s %s\n",$9,$1}' || true
     sudo lsof -nP -iTCP -sTCP:LISTEN -a -p "$pid" 2>/dev/null | grep -q '\*:' \
@@ -972,6 +1454,13 @@ except Exception: pass" 2>/dev/null)
   else
     dim "（进程未运行）"
   fi
+
+  # 日志体积。这一段不需要 sudo（文件是 0644），所以放在 can_sudo 判断之外。
+  # launchd 把 stdout/stderr 直接怼进文件，只涨不落，涨到几百 MB 也不会自己冒出来。
+  step "日志体积"
+  local ltotal; ltotal=$(log_total_bytes)
+  printf '      %-34s %s\n' "$LOGFILE + $(basename "$ERRFILE")" "$(human_size "$ltotal")"
+  log_size_warn || dim "未超过 ${LOG_WARN_MB} MB 的告警阈值"
 }
 
 #=======================================================================
@@ -1006,7 +1495,12 @@ cmd_syscheck() {
   else
     bad "仍有全局 IPv6 地址："
     printf '%s\n' "$v6addr" | sed 's/^/        /' >&2
+    bad_count=$((bad_count+1))
   fi
+
+  # 同 cmd_rules：不返回结果的话，自动化只能靠抓输出。
+  [ "$bad_count" = 0 ] && return 0
+  return 1
 }
 
 #=======================================================================
@@ -1059,11 +1553,53 @@ PY
 # 收到回包 = UDP/443 出得去 = QUIC 没被挡住。
 #
 # 两个端点任一收到回包就算通。它们都不在任何路由规则里，加备胎不动配置。
-# ⚠️ 已知局限：全部超时时，「已阻断」与「本机 UDP 整体出不去」区分不了，当前按
-# 「已阻断」这个乐观读法判。要区分得再引一个已知不该被拦的 UDP 对照端点。
+#
+# 全部超时时，「已阻断」与「本机 UDP 整体出不去」曾经区分不了，一律按前者
+# 乐观读法判——于是拔了网线也会打 ok「QUIC 已阻断」。现在由 _sb_udp_alive 这个
+# 对照端点来分辨，见 cmd_verify 第 4 步。
+# 没有改成「多试几次」：QUIC 被挡住是**期望的成功路径**，而它的表现恰恰是全部超时，
+# 加重试等于给每一次正常的 verify 平白加十几秒，还要乘 _sb_verify_rounds 的两轮。
 #
 # SB_FAKE_QUIC 只服务于测试：探测是内联 python3，PATH 桩拦不住它，没有这个后门
 # 第 4 步就没法在离线的测试里驱动。
+# UDP 到底通不通的对照组。发一个标准 DNS 查询到公共解析器的 udp/53，收到应答即算通。
+# 返回 0 = UDP 有来回，1 = 没有。
+#
+# ⚠️ 它证明的是「UDP 有来回」，不是「UDP 直出」：配置里的 DNS 劫持规则完全可能
+# 把这个查询接管掉再代答。用作「本机 UDP 是不是整个废了」的判据够用，别当成别的。
+# SB_FAKE_UDP 与 SB_FAKE_QUIC 同理，只为离线测试留的注入点。
+_sb_udp_alive() {
+  case "${SB_FAKE_UDP:-}" in
+    alive) return 0 ;;
+    dead)  return 1 ;;
+  esac
+  python3 - <<'PY' >/dev/null 2>&1
+import os, socket, struct, sys
+
+TARGETS = [("1.1.1.1", 53), ("8.8.8.8", 53)]
+
+# 最小 DNS 查询：example.com A IN
+def query(host, port):
+    tid = os.urandom(2)
+    pkt = tid + b"\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00"
+    for label in (b"example", b"com"):
+        pkt += bytes([len(label)]) + label
+    pkt += b"\x00\x00\x01\x00\x01"
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.settimeout(3)
+    try:
+        s.sendto(pkt, (host, port))
+        data, _ = s.recvfrom(2048)
+    except Exception:
+        return False
+    finally:
+        s.close()
+    return len(data) >= 2 and data[:2] == tid
+
+sys.exit(0 if any(query(h, p) for h, p in TARGETS) else 1)
+PY
+}
+
 _sb_quic_open() {
   case "${SB_FAKE_QUIC:-}" in
     open)    return 0 ;;
@@ -1180,10 +1716,19 @@ except Exception: print("")' 2>/dev/null)
   if g=$(_sb_resolve_a www.google.com); then
     g=$(printf '%s' "$g" | tr '\n' ' ')
     info "google.com → ${g}"
-    case "$g" in
-      157.240.*|31.13.*) vpbad "解析结果异常（疑似污染）—— 跑 syscheck 看系统 DNS 是不是内网地址" ;;
-      *) ok "解析正常" ;;
-    esac
+    # ⚠️ 必须逐条 IP 比，而且必须保持前缀锚定。
+    #   拿整行比：_sb_resolve_a 最多回 3 条，污染地址不在第一条就漏检
+    #             （实测 "1.2.3.4 157.240.9.9 5.6.7.8" 会被判成「解析正常」）。
+    #   改成 *31.13.* 这种通配：131.13.5.5 会被当成污染（子串命中），是误报。
+    local one polluted=0
+    for one in $g; do
+      case "$one" in 157.240.*|31.13.*) polluted=1 ;; esac
+    done
+    if [ "$polluted" = 1 ]; then
+      vpbad "解析结果异常（疑似污染）—— 跑 syscheck 看系统 DNS 是不是内网地址"
+    else
+      ok "解析正常"
+    fi
   else
     vpbad "dig / host / dscacheutil / python3 四级都拿不到 A 记录 —— 本机没有可用解析手段"
     info "解析结果没有可疑之处可言 —— 是解析这件事本身做不了；先确认能上网，再看 syscheck"
@@ -1196,8 +1741,13 @@ except Exception: print("")' 2>/dev/null)
   if _sb_quic_open; then
     vpbad "QUIC 未被阻断 —— 对端回了版本协商包，UDP/443 出得去"
     info "检查禁 QUIC 规则（udp + 443 + reject）是否在规则表里、是否排在放行规则之前"
-  else
+  elif _sb_udp_alive; then
     ok "QUIC 已阻断"
+  else
+    # 对照端点也不通 = 本机 UDP 整体出不去，那么「QUIC 探测超时」什么也证明不了。
+    # 按第 3、5 步一样的判据处理：取不到数据就是没有结论，不许拿 ok 混过去。
+    vpbad "UDP 整体出不去（对照端点 udp/53 也没有应答）—— QUIC 这一步没有结论"
+    info "先确认能上网；断网或 UDP 被全阻时，「已阻断」和「测不了」长得一模一样"
   fi
 
   step "5/5  国内直连与局域网"
@@ -1290,6 +1840,11 @@ except Exception: pass" 2>/dev/null)
   else
     warn "无 cache.db —— 规则集可能一次都没下成功"
   fi
+
+  # 退出码要能被自动化读：之前最后一条语句是 warn（printf），恒返回 0，
+  # 于是「全部不可达」和「全部可达」在脚本外看起来一模一样。
+  [ "$fail" -gt 0 ] && return 1
+  return 0
 }
 
 #=======================================================================
@@ -1298,6 +1853,9 @@ except Exception: pass" 2>/dev/null)
 cmd_debug() {
   require_installed
   need_root
+  # _stop_all_instances 自己认 $DRY，但下面那条 sudo "$BIN" run 不认 ——
+  # 不在这里早退的话，-n debug 会真的把内核跑到前台。
+  [ "$DRY" = 1 ] && { dim "[dry-run] 停掉服务，以 log.level=debug 前台跑 ${BIN}，Ctrl-C 后恢复服务"; return 0; }
   acquire_lock
   step "debug 前台试跑"
   info "停掉服务、以 debug 级别前台运行。方括号里的出站 tag 就是路由结果。"
@@ -1315,9 +1873,13 @@ PY
   # 必须是全局变量：trap 在函数返回后才触发，那时 local 作用域已销毁
   DEBUG_WAS_LOADED=0
   daemon_loaded && DEBUG_WAS_LOADED=1
-  _stop_all_instances
-
+  # ⚠️ trap 必须抢在 _stop_all_instances 前面接管：那一步内部有 sleep 1 加
+  # 最多 8 次 sleep 1，能阻塞近 9 秒，而它已经把现网服务 bootout 掉了。
+  # 之前 trap 注册在它之后，这几秒里按 Ctrl-C 只会走顶层那个仅清理临时文件的
+  # cleanup，服务再也不会被拉起来——正好和上面那句「Ctrl-C 结束后自动恢复服务」相反。
+  # 必须在 DEBUG_WAS_LOADED 赋值之后，否则 _debug_restore 读到 0 会跳过恢复。
   trap '_debug_restore; cleanup' EXIT INT TERM
+  _stop_all_instances
   sudo mkdir -p "$ETC"
   sudo "$BIN" run -D "$ETC" -c "$tmpcfg"
   # 正常退出（内核自己结束）时也要恢复；trap 会再调一次，_debug_restore 幂等
@@ -1385,8 +1947,11 @@ cmd_edit() {
   local before; before=$(shasum "$tmp" | awk '{print $1}')
 
   # 编辑器运行失败（崩溃、不存在的子命令等）时降级到默认编辑器重试一次
-  if ! $ed "$tmp"; then
-    local rc=$?
+  # ⚠️ 不能写成 `if ! $ed "$tmp"; then local rc=$?`：进了 then 分支正是因为
+  # `! $ed` 求值为真，$? 是那次取反的结果，恒为 0，打出来的退出码永远是假的。
+  local rc=0
+  $ed "$tmp" || rc=$?
+  if [ "$rc" != 0 ]; then
     warn "编辑器退出异常（退出码 ${rc}）：$ed"
     if [ "$ed" != "$DEFAULT_EDITOR" ] && editor_usable "$DEFAULT_EDITOR"; then
       if ask "改用 $DEFAULT_EDITOR 重新编辑？" y; then
@@ -1407,24 +1972,34 @@ cmd_edit() {
   if ! json_valid "$tmp"; then
     bad "JSON 语法错误，未应用"
     python3 -m json.tool "$tmp" 2>&1 | head -5 | sed 's/^/      /' >&2
-    local keep="/tmp/sb-edit-failed-$(date +%H%M%S).json"
-    cp "$tmp" "$keep"; info "你的修改已保留：$keep"
+    local keep; keep=$(keep_path "sb-edit-failed.json") || die "无法创建保留目录"
+    cp "$tmp" "$keep" && chmod 600 "$keep" 2>/dev/null
+    info "你的修改已保留：$keep"
+    dim "该文件含节点凭据，目录权限 700；处理完请自行删除"
     return 1
   fi
   local chk; chk=$(mktmp)
   if ! sudo "$BIN" check -c "$tmp" >"$chk" 2>&1; then
     bad "check 未通过，未应用"
     sed 's/^/      /' "$chk" >&2
-    local keep="/tmp/sb-edit-failed-$(date +%H%M%S).json"
-    cp "$tmp" "$keep"; info "你的修改已保留：$keep"
+    local keep; keep=$(keep_path "sb-edit-failed.json") || die "无法创建保留目录"
+    cp "$tmp" "$keep" && chmod 600 "$keep" 2>/dev/null
+    info "你的修改已保留：$keep"
+    dim "该文件含节点凭据，目录权限 700；处理完请自行删除"
     return 1
   fi
   grep -qi deprecated "$chk" && warn "存在废弃字段告警（不阻止启动）"
   ok "校验通过"
 
-  backup_config >/dev/null
+  if [ "$DRY" = 1 ]; then
+    dim "[dry-run] 备份现有配置、清理到最近 10 份、写入 $CFG 并重启服务"
+    info "你的修改已通过校验但未应用（-n）。"
+    return 0
+  fi
+
+  backup_config >/dev/null || die "备份失败，未改动配置"
   prune_backups 10
-  sudo cp "$tmp" "$CFG"
+  sudo cp "$tmp" "$CFG" || die "写入 $CFG 失败，配置未改动（备份仍在）"
   sudo chown root:wheel "$CFG"; sudo chmod 644 "$CFG"
   cmd_restart
 }
@@ -1433,7 +2008,8 @@ cmd_config() {
   require_installed
   case "${1:-show}" in
     show)   sudo cat "$CFG" ;;
-    backup) need_root; backup_config >/dev/null; prune_backups 10; ok "已备份" ;;
+    backup) need_root; acquire_lock; backup_config >/dev/null || die "备份失败"
+            prune_backups 10; ok "已备份" ;;
     list)   ls -1t "$CFG".*.bak 2>/dev/null | sed 's/^/      /' || info "无备份" ;;
     diff)
       local b="${2:-}"
@@ -1449,8 +2025,9 @@ cmd_config() {
       info "将恢复：$b"
       ask "确认？" n || return 0
       sudo "$BIN" check -c "$b" >/dev/null 2>&1 || warn "该备份未通过校验，恢复后可能起不来"
-      backup_config >/dev/null
-      sudo cp "$b" "$CFG"; sudo chown root:wheel "$CFG"; sudo chmod 644 "$CFG"
+      backup_config >/dev/null || die "备份现有配置失败，未执行恢复"
+      sudo cp "$b" "$CFG" || die "恢复失败，$CFG 未改动"
+      sudo chown root:wheel "$CFG"; sudo chmod 644 "$CFG"
       ok "已恢复"; cmd_restart ;;
     *) die "config: 未知子命令 $1（show|backup|list|diff|restore）" ;;
   esac
@@ -1459,9 +2036,17 @@ cmd_config() {
 #=======================================================================
 # 服务控制
 #=======================================================================
+# --dry-run 一律用「动手前打印计划再 return」，不要逐条包 run()。
+# run() 在 DRY 下返回 0 却什么也没做，而这些命令后面全都要读真实状态来判断：
+#   cmd_start  bootstrap 空转 → sleep 2 后 running 为假 → 报「启动后进程未出现」
+#   cmd_update download 空转 → tar 读不到包 → die
+#   cmd_update → cmd_restart 空转返回 0 → _sb_health 读真实状态 → 误判 → **触发回滚**
+# 所以早退点一律选在「已经把该查的都查完、但还没动系统」的那一刻。
 cmd_start() {
-  require_installed; need_root
+  require_installed; need_root; acquire_lock
   [ -f "$PLIST" ] || die "未安装服务 —— 先运行 install"
+  [ "$DRY" = 1 ] && { dim "[dry-run] launchctl enable + bootstrap system $PLIST"
+                      dim "[dry-run] 起来后若 DNS 不在代理模式，会问要不要设为 $PROXY_DNS"; return 0; }
   if running; then warn "已在运行"; return 0; fi
   sudo launchctl enable "$LABEL" 2>/dev/null || true
   if sudo launchctl bootstrap system "$PLIST" 2>&1 | sed 's/^/    /'; then
@@ -1497,6 +2082,9 @@ cmd_stop() {
     esac
   done
   need_root
+  acquire_lock
+  [ "$DRY" = 1 ] && { dim "[dry-run] launchctl bootout $LABEL"
+                      dim "[dry-run] 随后按 --restore-dns / --keep-dns / --dns 处理系统 DNS"; return 0; }
   sudo launchctl bootout "$LABEL" 2>/dev/null
   sleep 1
   if running; then
@@ -1514,7 +2102,15 @@ cmd_stop() {
 #   $2: 还原目标 backup|dhcp|<地址>，默认 backup
 _maybe_restore_dns() {
   local force="${1:-}" target="${2:-backup}"
-  dns_is_proxy_mode || return 0
+  # 早退只管交互询问那一支。用户显式传了 --restore-dns / --dns <地址>，
+  # 就算当前不在代理模式也得照做——之前这条早退排在看 $force 之前，
+  # 那些参数会被静默吞掉，连一行解释都没有。
+  if ! dns_is_proxy_mode; then
+    case "$force" in
+      1) info "系统 DNS 不在代理模式，但按你的要求仍执行还原" ;;
+      *) return 0 ;;
+    esac
+  fi
   echo
   warn "系统 DNS 仍指向 ${PROXY_DNS} —— 代理已停，这个地址的明文查询在国内会被污染"
   local how
@@ -1532,14 +2128,20 @@ _maybe_restore_dns() {
 }
 
 cmd_restart() {
-  require_installed; need_root
+  require_installed; need_root; acquire_lock
+  [ "$DRY" = 1 ] && { dim "[dry-run] launchctl kickstart -k ${LABEL}（失败则 stop --keep-dns + start）"; return 0; }
   if daemon_loaded; then
     if sudo launchctl kickstart -k "$LABEL" 2>/dev/null; then
       sleep 3
       running && ok "已重启" || { bad "重启后未运行"; sudo tail -20 "$ERRFILE" 2>/dev/null | sed 's/^/      /'; return 1; }
     else
       warn "kickstart 失败，改为重新加载"
-      cmd_stop; cmd_start
+      # --keep-dns：这是一次「重启」，不是「停服」。不加的话 cmd_stop 会走到
+      # _maybe_restore_dns 的询问分支（默认 y）把 DNS 还原成 DHCP，
+      # 紧接着 cmd_start 又问要不要设回去——-y 之下来回改两次。
+      # _sb_rollback_to_prev 也走这条路径，update 回滚会跟着抖一次 DNS。
+      cmd_stop --keep-dns || warn "停止未完全成功，仍尝试启动"
+      cmd_start
     fi
   else
     info "服务未加载，直接启动"
@@ -1547,7 +2149,11 @@ cmd_restart() {
   fi
 }
 
-cmd_enable()  { need_root; sudo launchctl enable "$LABEL" 2>/dev/null && ok "已启用（跨重启生效）" || warn "操作失败"; }
+cmd_enable()  {
+  need_root; acquire_lock
+  [ "$DRY" = 1 ] && { dim "[dry-run] launchctl enable $LABEL"; return 0; }
+  sudo launchctl enable "$LABEL" 2>/dev/null && ok "已启用（跨重启生效）" || warn "操作失败"
+}
 cmd_disable() {
   local restore_dns="" dns_target="backup"
   while [ $# -gt 0 ]; do
@@ -1561,6 +2167,9 @@ cmd_disable() {
     esac
   done
   need_root
+  acquire_lock
+  [ "$DRY" = 1 ] && { dim "[dry-run] launchctl bootout + disable $LABEL"
+                      dim "[dry-run] 随后按 --restore-dns / --keep-dns / --dns 处理系统 DNS"; return 0; }
   sudo launchctl bootout "$LABEL" 2>/dev/null || true
   sudo launchctl disable "$LABEL" 2>/dev/null && ok "已停用（重启后也不会自启）" || warn "操作失败"
   sleep 1
@@ -1569,12 +2178,85 @@ cmd_disable() {
   _maybe_restore_dns "$restore_dns" "$dns_target"
 }
 
+# logs [n | -f | size | truncate]
+#
+# 默认那一支先报体积再打日志尾巴：这两个文件只涨不落，而在此之前没有任何命令
+# 说过它们有多大。
+#
+# 读日志不再无条件 sudo —— 那两个文件是 0644，普通用户读得了。之前一律 sudo，
+# 结果是没票据时卡在一个看不见的密码提示上（提示被重定向吞掉了）。
 cmd_logs() {
   local a="${1:-50}"
+  case "$a" in
+    truncate) _logs_truncate; return $? ;;
+    size)     _logs_size; return 0 ;;
+  esac
+
   [ -f "$LOGFILE" ] || die "日志文件不存在：${LOGFILE}（服务可能从未启动过）"
-  if [ "$a" = "-f" ]; then sudo tail -f "$LOGFILE"
-  elif [[ "$a" =~ ^[0-9]+$ ]]; then sudo tail -"$a" "$LOGFILE"
-  else die "logs: 参数应为行数或 -f"; fi
+  if [ "$a" = "-f" ]; then
+    _log_cat -f "$LOGFILE"
+  elif [[ "$a" =~ ^[0-9]+$ ]]; then
+    _logs_size
+    echo
+    _log_cat "-$a" "$LOGFILE"
+  else
+    die "logs: 参数应为行数、-f、size 或 truncate"
+  fi
+}
+
+# tail 一个日志文件。读得动就直接读，读不动才抬 sudo。
+_log_cat() {
+  local opt="$1" f="$2"
+  if [ -r "$f" ]; then tail "$opt" "$f"
+  else sudo tail "$opt" "$f"; fi
+}
+
+_logs_size() {
+  step "日志体积"
+  local lo er total
+  lo=$(log_bytes "$LOGFILE"); er=$(log_bytes "$ERRFILE")
+  total=$(( lo + er ))
+  printf '      %-34s %s\n' "$LOGFILE" "$(human_size "$lo")"
+  printf '      %-34s %s\n' "$ERRFILE" "$(human_size "$er")"
+  printf '      %-34s %s\n' "合计" "$(human_size "$total")"
+  log_size_warn || dim "未超过 ${LOG_WARN_MB} MB 的告警阈值"
+}
+
+# 原地截断。inode 必须保持不变 —— 见文件上方 log_bytes 那一段的说明。
+_logs_truncate() {
+  local f before total_before total_after freed
+  total_before=$(log_total_bytes)
+  [ "$total_before" = 0 ] && { ok "日志本来就是空的，无需回收"; return 0; }
+
+  step "回收日志空间"
+  info "当前占用 $(human_size "$total_before")"
+  ask "把 ${LOGFILE} 与 ${ERRFILE} 原地清空？（服务不受影响，不重启）" y || { info "已取消"; return 0; }
+
+  for f in "$LOGFILE" "$ERRFILE"; do
+    [ -f "$f" ] || continue
+    before=$(log_bytes "$f")
+    [ "$before" = 0 ] && continue
+    # `: > 文件` 是原地截断，inode 不变，launchd 那个 fd 继续有效。
+    # 绝不能写成 rm + touch 或 mv —— 换了 inode，守护进程会一直往旧的那个写。
+    if [ -w "$f" ]; then
+      run ": > '$f'"
+    else
+      run "sudo sh -c ': > \"$f\"'"
+    fi
+    info "  $(basename "$f") ← $(human_size "$before")"
+  done
+
+  total_after=$(log_total_bytes)
+  freed=$(( total_before - total_after ))
+  if [ "$DRY" = 1 ]; then
+    dim "[dry-run] 以上均未执行"
+  elif [ "$total_after" -lt "$total_before" ]; then
+    ok "已回收 $(human_size "$freed")，现占用 $(human_size "$total_after")"
+  else
+    bad "截断没有生效，仍占用 $(human_size "$total_after")"
+    return 1
+  fi
+  return 0
 }
 
 #=======================================================================
@@ -1675,6 +2357,10 @@ _sb_probe_socks() {
   local bin="$1" cfg="$2" port="$3" wd="$4" pid=0 up=1 rc=1 i ip
   "$bin" run -c "$cfg" -D "$wd" >"$wd/run.log" 2>&1 &
   pid=$!
+  # 登记给 cleanup：这一步最长要等 SANDBOX_WAIT 秒，中途 Ctrl-C 的话 $wd 会被删掉，
+  # 沙箱进程却还活着——它会让 pgrep -x sing-box 判活，把 running / _sb_health /
+  # _stop_all_instances 全带偏，还占着沙箱端口。
+  BG_PIDS+=("$pid")
   i=0
   while [ "$i" -lt "$SANDBOX_WAIT" ]; do
     kill -0 "$pid" 2>/dev/null || break        # 进程已经死了，别再干等
@@ -1691,6 +2377,7 @@ _sb_probe_socks() {
   fi
   kill "$pid" 2>/dev/null
   wait "$pid" 2>/dev/null
+  BG_PIDS=()
   return $rc
 }
 
@@ -1771,6 +2458,14 @@ _sb_rollback_to_prev() {
 cmd_update() {
   require_installed; need_root; acquire_lock
 
+  #--- 阶段 S：脚本自己 -------------------------------------------------
+  # 先脚本后内核。SB_SELF_UPDATED=1 是 exec 进来的新进程，整段跳过防死循环。
+  if [ "${SB_SELF_UPDATED:-0}" = 1 ]; then
+    dim "脚本已在本次升级中更新过，跳过阶段 S"
+  else
+    _self_update
+  fi
+
   #--- 阶段 0：预检（不下载）--------------------------------------------
   step "阶段 0/3　预检"
   local cur new arch
@@ -1795,8 +2490,23 @@ cmd_update() {
   arch=$(detect_arch)
   [ -n "$arch" ] || die "不支持的架构：$(uname -m)"
 
+  # 早退点选在这里：阶段 0 该查的都查完了（版本、跨 minor 确认、架构），但一个字节都还没下。
+  # dry-run 最有用的信息恰恰是「当前什么版本、要升到什么、接下来会做哪几步」。
+  if [ "$DRY" = 1 ]; then
+    dim "[dry-run] 下载 sing-box-${new}-darwin-${arch}.tar.gz"
+    dim "[dry-run] 阶段 1 沙箱：临时前缀实跑新内核 + check -c 当前配置 + socks 建链（现网不受影响）"
+    dim "[dry-run] 阶段 2 升级：$BIN → ${BIN}.prev，装入 v${new}，重启并做健康检查"
+    dim "[dry-run] 阶段 3 验收：跑 verify，链路档失败才回滚，策略档失败放行"
+    info "以上均未执行。真正升级去掉 -n。"
+    return 0
+  fi
+
   local tmpd; tmpd=$(mktmpd)
-  download "$tmpd/sb.tar.gz" "$GH_DL/v${new}/sing-box-${new}-darwin-${arch}.tar.gz" "内核 v$new" \
+  local tarball="sing-box-${new}-darwin-${arch}.tar.gz"
+  local want_sha; want_sha=$(asset_digest "$new" "$tarball") || want_sha=""
+  if [ -n "$want_sha" ]; then dim "校验值来自 GitHub API：${want_sha}"
+  else warn "取不到该 asset 的 sha256 —— 本次不做完整性校验"; fi
+  download "$tmpd/sb.tar.gz" "$GH_DL/v${new}/${tarball}" "内核 v$new" "$want_sha" \
     || die "下载失败"
   tar xzf "$tmpd/sb.tar.gz" -C "$tmpd" || die "解压失败"
   local newbin="$tmpd/sing-box-${new}-darwin-${arch}/sing-box"
@@ -1815,13 +2525,14 @@ cmd_update() {
   }
   ok "新内核可执行：$(printf '%s' "$vout" | head -1)"
 
-  # 没有官方 checksum 可比对，完整性就验到「架构对得上」为止，并明说到此为止。
+  # 完整性校验已经在 download 里按 GitHub API 的 asset digest 做过了（见 asset_digest）。
+  # 这里再验一次架构，是因为 sha256 只能证明「文件没被改」，不能证明「下对了平台」。
   if printf '%s' "$vout" | grep -q "darwin/${arch}"; then
     ok "架构匹配：darwin/${arch}"
   else
     die "架构不匹配：期望 darwin/${arch}，实际 $(printf '%s' "$vout" | sed -n 's/.*\(darwin\/[a-z0-9]*\).*/\1/p' | head -1)"
   fi
-  dim "上游 release 不提供 checksum 文件，未做 sha256 完整性校验"
+  dim "sha256 已在下载阶段比对（校验值取自 GitHub API 的 asset digest）"
 
   chk=$(mktmp)
   if sudo "$stage" check -c "$CFG" >"$chk" 2>&1; then
@@ -1901,9 +2612,29 @@ cmd_rollback() {
   info "回到：${prev:-未知}"
   ask "确认回滚？" y || return 0
 
+  if [ "$DRY" = 1 ]; then
+    dim "[dry-run] mv ${BIN}.prev → ${BIN}，重启，再跑一遍 verify 验收"
+    dim "[dry-run] 有 ${LAUNCHER}.prev 的话，singbox 命令一并退回上一版"
+    info "以上均未执行。"
+    return 0
+  fi
+
   sudo mv "$BIN.prev" "$BIN" || die "回滚失败：换不回 ${BIN}"
   sudo xattr -d com.apple.quarantine "$BIN" 2>/dev/null || true
   ok "已换回 ${prev:-旧版本}"
+
+  # 内核与启动器各有各的 .prev，退路是独立的。只退内核而不退命令，下次跑的仍是
+  # 新脚本 —— 等于只退了一半，而终端上看不出来。
+  if [ -f "$LAUNCHER.prev" ]; then
+    if sudo mv -f "$LAUNCHER.prev" "$LAUNCHER"; then
+      ok "singbox 命令已退回上一版（${LAUNCHER}）"
+    else
+      warn "内核已退回，但换不回 ${LAUNCHER} —— 手工：sudo mv ${LAUNCHER}.prev ${LAUNCHER}"
+    fi
+  else
+    info "没有 ${LAUNCHER}.prev —— singbox 命令没有退路，本次只退了内核"
+  fi
+
   cmd_restart || die "回滚后重启失败 —— 跑 $(basename "$0") doctor"
   _sb_health || warn "健康检查未全过"
 
@@ -1920,6 +2651,9 @@ cmd_rollback() {
 # dns
 #=======================================================================
 cmd_dns() {
+  # status 是只读的，不占锁；其余几支都会改系统 DNS，而 dns_backup_save 是
+  # 「清空再逐行 append」的非原子写，并发下能读到半份文件。
+  case "${1:-status}" in status) ;; *) acquire_lock ;; esac
   case "${1:-status}" in
     status)
       step "系统 DNS 现状"
@@ -1945,6 +2679,7 @@ cmd_dns() {
       need_root
       local addr="${2:-}"
       [ -n "$addr" ] || die "dns set 需要地址，如：dns set 223.5.5.5"
+      _dns_addr_ok "$addr" || die "地址不合法：${addr}（只接受 IPv4 / IPv6，多个用空格分隔，或字面量 empty）"
       step "设为 $addr"; dns_restore "$addr" ;;
     *) die "dns: 未知子命令 $1（status|dhcp|backup|proxy|set <地址>）" ;;
   esac
@@ -1953,24 +2688,28 @@ cmd_dns() {
 #=======================================================================
 # mirror
 #=======================================================================
+# 探一个镜像并打印耗时。原本嵌在 cmd_mirror 里，提到顶层是为了让自检第 7 项
+# （函数内嵌定义）能真正闭合——那一项之前的正则只匹配 2 空格缩进，
+# 抓不到这个 6 空格的，于是恒绿、永远不报。
+_mirror_probe_one() {
+  local label="$1" u="$2" a b
+  a=$(date +%s)
+  if probe_url "$u" "$PROBE_TIMEOUT"; then b=$(date +%s)
+    printf '      %-34s %s可用%s  %ss\n' "$label" "$C_OK" "$C_N" "$((b-a))"
+  else b=$(date +%s)
+    printf '      %-34s %s不通%s  %ss\n' "$label" "$C_ERR" "$C_N" "$((b-a))"
+  fi
+}
+
 cmd_mirror() {
   case "${1:-test}" in
     test)
       step "探测镜像可用性"
       dim "这类站点更替频繁，结果只代表此刻；每个最多等 ${PROBE_TIMEOUT}s"
       local probe_path="$GH_DL/v1.12.0/sing-box-1.12.0-darwin-amd64.tar.gz"
-      local m t0 t1
-      _probe_one() {
-        local label="$1" u="$2" a b
-        a=$(date +%s)
-        if probe_url "$u" "$PROBE_TIMEOUT"; then b=$(date +%s)
-          printf '      %-34s %s可用%s  %ss\n' "$label" "$C_OK" "$C_N" "$((b-a))"
-        else b=$(date +%s)
-          printf '      %-34s %s不通%s  %ss\n' "$label" "$C_ERR" "$C_N" "$((b-a))"
-        fi
-      }
-      _probe_one "直连 github.com" "$probe_path"
-      for m in $(mirror_list); do _probe_one "$m" "$(mirror_url "$m" "$probe_path")"; done
+      local m
+      _mirror_probe_one "直连 github.com" "$probe_path"
+      for m in $(mirror_list); do _mirror_probe_one "$m" "$(mirror_url "$m" "$probe_path")"; done
       echo
       local saved; saved=$(prefs_get mirror 2>/dev/null) || saved=""
       info "当前记住的镜像：${saved:-（无，每次从头试）}"
@@ -1981,6 +2720,7 @@ cmd_mirror() {
       [ -n "$m" ] || die "mirror set 需要一个前缀，如：mirror set https://ghfast.top"
       case "$m" in http://*|https://*) ;; *) die "镜像地址必须以 http:// 或 https:// 开头" ;; esac
       info "探测 $m …"
+      [ "$DRY" = 1 ] && { dim "[dry-run] 探测后把 $m 写入 $PREFS"; return 0; }
       if probe_url "$(mirror_url "$m" "$GH_DL/v1.12.0/sing-box-1.12.0-darwin-amd64.tar.gz")" "$PROBE_TIMEOUT"; then
         prefs_set mirror "$m" && ok "已固定为首选镜像"
       else
@@ -1988,7 +2728,8 @@ cmd_mirror() {
         ask "仍然保存？" n && { prefs_set mirror "$m" && ok "已保存"; } || info "未保存"
       fi
       ;;
-    reset) prefs_unset mirror; ok "已清除镜像偏好，恢复为直连优先 + 内置列表" ;;
+    reset) [ "$DRY" = 1 ] && { dim "[dry-run] 从 $PREFS 清除 mirror 偏好"; return 0; }
+           prefs_unset mirror; ok "已清除镜像偏好，恢复为直连优先 + 内置列表" ;;
     show)
       local saved; saved=$(prefs_get mirror 2>/dev/null) || saved=""
       info "记住的镜像：${saved:-（无）}"
@@ -2009,7 +2750,9 @@ _hit() { bad "$1"; DOCTOR_FOUND=1; }
 cmd_doctor() {
   need_root
   step "收集诊断信息"
-  local out="/tmp/singbox-doctor-$(date +%Y%m%d-%H%M%S).txt"
+  # 这份转储里有日志（访问过的域名与出站 tag）、launchctl print、配置校验输出，
+  # 不是可以随手丢进 world-readable /tmp 的东西。
+  local out; out=$(keep_path "doctor-$(date +%Y%m%d-%H%M%S).txt") || die "无法创建诊断目录"
   {
     echo "===== 脚本 ====="; echo "singbox.sh v$VERSION  prefix=$PREFIX"
     echo "===== 系统 ====="; sw_vers 2>&1; uname -m
@@ -2032,6 +2775,7 @@ cmd_doctor() {
     echo; echo "===== 日志 ====="; sudo tail -50 "$LOGFILE" 2>&1
     echo; echo "===== 错误日志 ====="; sudo tail -30 "$ERRFILE" 2>&1
   } > "$out" 2>&1
+  chmod 600 "$out" 2>/dev/null
   ok "已写入 $out"
 
   step "自动判读"
@@ -2046,9 +2790,15 @@ cmd_doctor() {
   [ -f "$PLIST" ] && { plutil -lint "$PLIST" >/dev/null 2>&1 || _hit "plist 语法错误：删掉后重新 install"; }
   grep -q "IPv6=On" "$out" && { warn "有网络服务的 IPv6 未关：跑 $(basename "$0") sysprep"; DOCTOR_FOUND=1; }
   running || _hit "sing-box 未运行"
+  # 日志体积单列一条判据：launchd 不轮转，它只涨不落，而且不会自己冒出来。
+  log_size_warn && DOCTOR_FOUND=1
   [ "$DOCTOR_FOUND" = 0 ] && ok "未发现已知问题模式"
+  local rc=0
+  [ "$DOCTOR_FOUND" = 0 ] || rc=1
   echo
   info "把 $out 的内容贴出来即可定位大多数问题"
+  warn "贴之前先看一眼：里面有你访问过的域名、节点 tag 与日志"
+  return $rc
 }
 
 #=======================================================================
@@ -2060,8 +2810,8 @@ cmd_uninstall() {
   ask "移除服务与内核？配置目录 $ETC 会保留" n || { info "已取消"; return 0; }
   _stop_all_instances
   sudo launchctl disable "$LABEL" 2>/dev/null || true
-  sudo rm -f "$PLIST"
-  ok "服务已移除"
+  sudo rm -f "$PLIST" && ok "服务已移除" \
+    || warn "plist 删除失败，$PLIST 仍在（已 disable，重启后不会自启）"
   if ask "同时删除内核 ${BIN}？" n; then sudo rm -f "$BIN" && ok "内核已删除"; fi
   if ask "同时删除配置目录 ${ETC}（含所有备份）？" n; then sudo rm -rf "$ETC" && ok "配置已删除"; fi
   echo
@@ -2093,6 +2843,20 @@ cmd_uninstall() {
       dim "手动还原：sudo networksetup -setv6automatic \"<服务名>\""
     fi
   fi
+
+  # 整个流程的最后一条语句：删掉 install 自动放进去的那个命令。
+  # 不问 —— 装的时候没问过，装启动器是 install 的一部分而不是可选项。
+  #
+  # 跑的就是 $LAUNCHER 自己时也是安全的：rm 是 unlink，不影响本进程已经打开的 fd，
+  # 目录项没了而 inode 还在，剩下的语句照常从旧内容里读出来执行。
+  if [ -e "$LAUNCHER" ] || [ -e "$LAUNCHER.prev" ]; then
+    echo
+    if sudo rm -f "$LAUNCHER" "$LAUNCHER.prev"; then
+      ok "singbox 命令已移除（${LAUNCHER}）"
+    else
+      warn "删不掉 ${LAUNCHER} —— 手工：sudo rm -f ${LAUNCHER} ${LAUNCHER}.prev"
+    fi
+  fi
 }
 
 # 清理散落在别处的运行残留。
@@ -2103,6 +2867,8 @@ _cleanup_strays() {
   local seen="" d
   local found=()
   for d in ${dirs[@]+"${dirs[@]}"}; do
+    # cd 失败时那个元素是空串，不拦住的话下面会去查 /ui 和 /cache.db
+    [ -n "$d" ] || continue
     case "$seen" in *"|$d|"*) continue ;; esac
     seen="$seen|$d|"
     [ -d "$d/ui" ] && [ -f "$d/ui/index.html" ] && found+=("$d/ui")
@@ -2117,8 +2883,15 @@ _cleanup_strays() {
     printf '      %s  (%s)\n' "$x" "$(du -sh "$x" 2>/dev/null | awk '{print $1}')"
   done
   if ask "删除这些残留？" y; then
-    for x in ${found[@]+"${found[@]}"}; do rm -rf "$x" && info "  已删除 $x"; done
-    ok "残留已清理"
+    # 不给 rm -rf 加 sudo：这些路径来自 $HOME / $PWD / 脚本目录，放大爆炸半径不值当。
+    # 删不掉（多半是曾经 sudo 前台跑过、文件属 root）就把命令打出来，决定权交回用户。
+    local left=0
+    for x in ${found[@]+"${found[@]}"}; do
+      [ -n "$x" ] || continue
+      if rm -rf "$x" 2>/dev/null; then info "  已删除 $x"
+      else left=$((left+1)); warn "  删不掉（可能属 root）：sudo rm -rf '$x'"; fi
+    done
+    [ "$left" = 0 ] && ok "残留已清理" || warn "$left 项未能删除，见上面的手动命令"
   else
     info "保留"
   fi
@@ -2152,24 +2925,36 @@ singbox.sh v$VERSION —— sing-box on macOS 全生命周期管理
                                        --dns dhcp|backup|<地址> | --dns-dhcp
   dns <sub>           status | dhcp | backup | proxy | set <地址>
                       系统 DNS 的查看与切换
-  logs [n|-f]         看日志
+  logs [n|-f|size|truncate]
+                      看日志。默认先报体积再打尾巴；size 只看体积；
+                      truncate 原地清空回收空间（inode 不变，服务不受影响、不用重启）
+                      launchd 不做日志轮转，这两个文件只涨不落 ——
+                      status 与 doctor 超过阈值会点名（默认 64 MB）
 
 检查
-  verify              完整验证清单（节点/出口 IP/DNS/IPv6/QUIC/国内直连）
-                      退出码 0 全过；1 链路档失败（节点/出口 IP，换内核可能修好）；
-                      2 仅策略档失败（DNS/QUIC/国内直连，回滚换不回来）
+  verify              完整验证清单（节点/出口 IP/DNS/IPv6/QUIC/国内直连/局域网）
+                      退出码 0 全过；1 链路档失败；2 仅策略档失败
+                      链路档：节点链路、兜底出口取不到、两个出口相同、冒出全局 IPv6
+                              —— 换内核可能修好，update 只认这一档才回滚
+                      策略档：DNS 污染或解析手段全废、QUIC、国内直连、局域网网关、
+                              以及参照站点（ipinfo.io / cip.cc）取不到数据
+                              —— 路由策略与环境的问题，回滚一个都换不回来
   syscheck            系统层复查（换网络、换硬件后跑）
-  rules               验证规则集 URL 可达
+                      退出码 0 全合格；1 有服务 IPv6 未关、DNS 是内网，或仍有全局 IPv6
+  rules               验证规则集 URL 可达。退出码 0 全可达；1 有不可达
   debug               debug 前台跑，看每条连接落在哪个出站
-  doctor              收集诊断并自动判读
+  doctor              收集诊断并自动判读。退出码 0 未发现已知问题；1 命中了判据
+                      诊断文件写在 0700 的临时目录里（含域名与日志，贴之前先看一眼）
 
 维护
-  update              升级内核：预检 → 沙箱验证 → 升级 → 验收
+  update              升级脚本与内核：阶段 S 脚本自更新 → 预检 → 沙箱验证 → 升级 → 验收
                       沙箱阶段用临时前缀实跑新内核，现网服务不受影响；
                       任一阶段失败自动回滚。跨 minor 会额外确认一次
                       验收只认 verify 的链路档（退出 1）才回滚；策略档（退出 2）
                       打条 warn 放行 —— 回滚旧内核修不了路由策略
   rollback            换回上一个内核（update 成功后保留的 .prev）并重新验收
+                      .prev 只有 update 会写、只保留一份，只能退一步。
+                      install 不碰它（它的临时回滚点放在临时目录里）
   mirror <sub>        test | set <url> | show | reset —— GitHub 下载镜像
   uninstall           卸载
 
@@ -2185,6 +2970,11 @@ singbox.sh v$VERSION —— sing-box on macOS 全生命周期管理
 环境变量
   SB_MIRRORS          空格分隔的镜像前缀列表，覆盖内置默认
   SB_PREFIX           同 --prefix
+  SB_LOGDIR           日志目录（默认 /var/log）。install 时的取值会烧进 plist
+  SB_LOG_WARN_MB      日志体积告警阈值，默认 64
+  SB_SELF_REPO        脚本自更新的来源仓库（默认 lzyMeta/macos-singbox-client-helper）
+  SB_SELF_UPDATED     =1 时 update 跳过阶段 S（阶段 S 自己 exec 时会设）
+  SB_LOCK_INHERIT     =1 时沿用 exec 之前那把锁（同一个 PID）
   EDITOR              edit 的默认编辑器（--editor 优先）
 
 示例
@@ -2205,11 +2995,15 @@ while [ $# -gt 0 ]; do
     -y|--yes)     ASSUME_YES=1; shift ;;
     -q|--quiet)   QUIET=1; shift ;;
     -n|--dry-run) DRY=1; shift ;;
+    # ⚠️ 这一行重算的四个路径要齐：LAUNCHER 漏了就会出现「内核装进 /opt、
+    # 命令装进 /usr/local」。而它们必须与 shift 2 共一行（或紧跟在 || die 那行下面）：
+    # 自检第 8 项盯的就是「shift 2 前一行有没有 die 护栏」，拆行会把那道守卫弄丢。
     --prefix)     PREFIX="${2:-}"; [ -n "$PREFIX" ] || die "--prefix 需要参数"
-                  BIN="$PREFIX/bin/sing-box"; ETC="$PREFIX/etc/sing-box"; CFG="$ETC/config.json"; shift 2 ;;
+                  BIN="$PREFIX/bin/sing-box"; ETC="$PREFIX/etc/sing-box"; CFG="$ETC/config.json"; LAUNCHER="$PREFIX/bin/singbox"; shift 2 ;;
     -h|--help)    cmd_help; exit 0 ;;
     --version)    if [ -z "$CMD" ]; then echo "singbox.sh v$VERSION"; exit 0; fi
-                  ARGS+=("$1" "${2:-}"); shift 2 ;;
+                  [ -n "${2:-}" ] || die "--version 需要参数，如 --version 1.14.0"
+                  ARGS+=("$1" "$2"); shift 2 ;;
     -*)           # 命令已确定时，后续参数交给子命令自行解析
                   if [ -n "$CMD" ]; then ARGS+=("$1"); shift
                   else die "未知参数：$1（-h 看帮助）"; fi ;;
@@ -2219,6 +3013,15 @@ done
 
 # 平台检查放在参数解析之后：--help / --version 在任何系统上都应可用
 check_platform
+
+# 不收参数的命令：dispatch 里它们都写成 `cmd_xxx ;;`，不转发 $ARGS，
+# 于是 `singbox.sh status thisIsBogus` 会一声不响地正常跑完并退 0。
+# 与 cmd_install / cmd_config 的 `*) die "未知参数"` 约定不一致，这里统一补上门卫。
+# 逐个函数加参数解析没有意义——它们本来就不收参数。
+case "${CMD:-status}" in
+  sysprep|status|verify|syscheck|start|restart|debug|rules|update|rollback|doctor|uninstall|help)
+    [ "${#ARGS[@]}" -eq 0 ] || die "${CMD:-status} 不接受参数：${ARGS[*]}（-h 看帮助）" ;;
+esac
 
 case "${CMD:-status}" in
   install)   cmd_install ${ARGS[@]+"${ARGS[@]}"} ;;

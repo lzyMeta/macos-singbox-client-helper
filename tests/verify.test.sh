@@ -63,6 +63,9 @@ JSON
   # ⚠️ 默认必须钉死 QUIC 结果。不钉的话第 4 步会真的往公网发 UDP 包：
   # 联网时判「未阻断」→ 每条用例都莫名其妙变成退出 2；离线时每次白等两个超时。
   export SB_FAKE_QUIC=blocked
+  # 同理钉死 UDP 对照端点。SB_FAKE_QUIC=blocked 之后会走到 _sb_udp_alive，
+  # 不钉的话这里同样会真的发包出去，离线跑测试就变成假红。
+  export SB_FAKE_UDP=alive
 
   unset SB_FAKE_VERIFY_FAIL SB_FAKE_DIG_FAIL SB_FAKE_DIG_IP SB_FAKE_HOST_FAIL \
         SB_FAKE_HOST_IP SB_FAKE_DSCACHEUTIL_FAIL SB_FAKE_DSCACHEUTIL_IP \
@@ -134,6 +137,27 @@ else
   ng "解析到 157.240.1.1：期望 2 且报污染（实际 ${CODE}）"
 fi
 
+#-- 5b. 污染 IP 不在第一条：整行匹配会漏掉它 -----------------------------
+# case "$g" in 157.240.*) 是从字符串开头匹配，而 _sb_resolve_a 最多回 3 条、
+# 拼成一行。改动之前这条会被判成「解析正常」并退 0。
+setup
+SB_FAKE_DIG_IP=1.2.3.4,157.240.9.9,5.6.7.8 sb
+if [ "$CODE" = 2 ] && inlog "污染"; then
+  ok "污染 IP 排在第 2 条：仍然退出 2 并报污染"
+else
+  ng "污染 IP 排在第 2 条：期望 2 且报污染（实际 ${CODE}）"
+fi
+
+#-- 5c. 131.13.5.5 不是污染：通配匹配会误报 ------------------------------
+# 修法若图省事写成 *31.13.*，131.13.5.5 会因为子串命中被误判成污染。
+setup
+SB_FAKE_DIG_IP=131.13.5.5 sb
+if [ "$CODE" = 0 ] && inlog "解析正常"; then
+  ok "131.13.5.5：不误报为污染，退出 0"
+else
+  ng "131.13.5.5：期望 0 且报解析正常（实际 ${CODE}）"
+fi
+
 #-- 6. QUIC 没被挡住：硬失败（原为 warn） --------------------------------
 setup
 SB_FAKE_QUIC=open sb
@@ -150,6 +174,17 @@ if [ "$CODE" = 0 ] && inlog "QUIC 已阻断"; then
   ok "QUIC 已阻断：第 4 步 ok，退出 0"
 else
   ng "QUIC 已阻断：期望 0 且日志有「QUIC 已阻断」（实际 ${CODE}）"
+fi
+
+#-- 7b. QUIC 超时但 UDP 对照也不通：不许拿「已阻断」混过去 ----------------
+# 这是拔网线 / UDP 被整体阻断的形态。改动之前这里会打 ok「QUIC 已阻断」并退 0，
+# 也就是把「测不了」渲染成「测过了」。
+setup
+SB_FAKE_QUIC=blocked SB_FAKE_UDP=dead sb
+if [ "$CODE" = 2 ] && inlog "UDP 整体出不去" && inlog "没有结论"; then
+  ok "QUIC 超时且 UDP 对照不通：退出 2，报「没有结论」而不是「已阻断」"
+else
+  ng "QUIC 超时且 UDP 对照不通：期望 2 且报没有结论（实际 ${CODE}）"
 fi
 
 #-- 8. 国内直连出口 == SOCKS 出口 ---------------------------------------
