@@ -32,7 +32,9 @@ run() { out=$("$SELFCHECK" "$1" 2>&1); code=$?; }
 echo "验证 $SELFCHECK 的检查项是否真的在检查"
 
 # a) 检查器自身不得报工具用法错误
-for f in clean.sh bad-fullwidth.sh bad-array.sh bad-gnu.sh; do
+for f in clean.sh bad-fullwidth.sh bad-array.sh bad-gnu.sh bad-shift2.sh \
+         bad-localself.sh bad-grepc.sh bad-nested.sh bad-bash4.sh \
+         bad-mktemp.sh bad-kill9.sh bad-launchctl.sh bad-syntax.sh; do
   run "$FIX/$f"
   if printf '%s' "$out" | grep -qE 'invalid option|illegal option|usage: grep'; then
     ng "${f}：检查器自身报了工具用法错误" "$out"
@@ -72,6 +74,73 @@ if [ "$code" != 0 ] && printf '%s' "$out" | grep -q 'grep -nP'; then
   ok "bad-gnu.sh：点名了 grep -nP"
 else
   ng "bad-gnu.sh：期望点名 grep -nP（退出码 ${code}）" "$out"
+fi
+
+
+# c4..c12) 其余每一项都必须点名违规那一行。
+#         这些项此前一个 fixture 都没有 —— 第 7 项（嵌套函数）当时的正则
+#         只匹配恰好 2 空格缩进，恒绿、永远不报，而没有样本能发现这件事。
+run "$FIX/bad-shift2.sh"
+if [ "$code" != 0 ] && printf '%s' "$out" | grep -qF 'shift 2'; then
+  ok "bad-shift2.sh：点名了shift 2 没有 die 护栏"
+else
+  ng "bad-shift2.sh：期望点名shift 2 没有 die 护栏（退出码 ${code}）" "$out"
+fi
+
+run "$FIX/bad-localself.sh"
+if [ "$code" != 0 ] && printf '%s' "$out" | grep -qF 'url='; then
+  ok "bad-localself.sh：点名了同一条 local 里引用刚声明的变量"
+else
+  ng "bad-localself.sh：期望点名同一条 local 里引用刚声明的变量（退出码 ${code}）" "$out"
+fi
+
+run "$FIX/bad-grepc.sh"
+if [ "$code" != 0 ] && printf '%s' "$out" | grep -qF 'grep -ci'; then
+  ok "bad-grepc.sh：点名了grep -c 叠加 || echo 兜底"
+else
+  ng "bad-grepc.sh：期望点名grep -c 叠加 || echo 兜底（退出码 ${code}）" "$out"
+fi
+
+run "$FIX/bad-nested.sh"
+if [ "$code" != 0 ] && printf '%s' "$out" | grep -qF '_inner'; then
+  ok "bad-nested.sh：点名了6 空格缩进的嵌套函数定义"
+else
+  ng "bad-nested.sh：期望点名6 空格缩进的嵌套函数定义（退出码 ${code}）" "$out"
+fi
+
+run "$FIX/bad-bash4.sh"
+if [ "$code" != 0 ] && printf '%s' "$out" | grep -qF 'declare -A'; then
+  ok "bad-bash4.sh：点名了bash 4 专有的 declare -A"
+else
+  ng "bad-bash4.sh：期望点名bash 4 专有的 declare -A（退出码 ${code}）" "$out"
+fi
+
+run "$FIX/bad-mktemp.sh"
+if [ "$code" != 0 ] && printf '%s' "$out" | grep -qF 'XXXXXX.json'; then
+  ok "bad-mktemp.sh：点名了XXXXXX 后带后缀的 mktemp 模板"
+else
+  ng "bad-mktemp.sh：期望点名XXXXXX 后带后缀的 mktemp 模板（退出码 ${code}）" "$out"
+fi
+
+run "$FIX/bad-kill9.sh"
+if [ "$code" != 0 ] && printf '%s' "$out" | grep -qF 'kill -9'; then
+  ok "bad-kill9.sh：点名了kill -9"
+else
+  ng "bad-kill9.sh：期望点名kill -9（退出码 ${code}）" "$out"
+fi
+
+run "$FIX/bad-launchctl.sh"
+if [ "$code" != 0 ] && printf '%s' "$out" | grep -qF 'launchctl load'; then
+  ok "bad-launchctl.sh：点名了废弃的 launchctl load"
+else
+  ng "bad-launchctl.sh：期望点名废弃的 launchctl load（退出码 ${code}）" "$out"
+fi
+
+run "$FIX/bad-syntax.sh"
+if [ "$code" != 0 ] && printf '%s' "$out" | grep -qF 'syntax error'; then
+  ok "bad-syntax.sh：点名了bash 语法错误"
+else
+  ng "bad-syntax.sh：期望点名bash 语法错误（退出码 ${code}）" "$out"
 fi
 
 echo

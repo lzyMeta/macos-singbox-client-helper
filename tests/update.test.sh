@@ -128,7 +128,11 @@ JSON
   # 不钉死结果的话，这里每条用例都会去连公网：联网时判「QUIC 未阻断」→ 阶段 3
   # 变成策略档失败，离线时白等两个超时。
   export SB_FAKE_QUIC=blocked
+  # 同理钉死 UDP 对照组：QUIC=blocked 之后 verify 第 4 步会走到 _sb_udp_alive，
+  # 不钉的话这里照样会往公网发 UDP，离线跑测试就是假红。
+  export SB_FAKE_UDP=alive
 
+  unset SB_FAKE_BAD_SHA SB_FAKE_NO_DIGEST
   unset SB_FAKE_CHECK_FAIL SB_FAKE_RUN_FAIL SB_FAKE_START_FAIL \
         SB_FAKE_SANDBOX_SOCKS_FAIL SB_FAKE_VERIFY_FAIL SB_FAKE_NO_TUN \
         SB_FAKE_PROBE_FAIL SB_FAKE_DEPRECATED SB_FAKE_TUN_HOST_ONLY \
@@ -291,6 +295,65 @@ if [ "$CODE" != 0 ] && [ "$(sig "$(BIN)")" = "$before" ] \
   ok "rollback 无 .prev：因缺回滚点而报错退出，不动任何东西"
 else
   ng "rollback 无 .prev：期望非 0、点名 .prev、且 \$BIN 不变（退出 ${CODE}）"
+fi
+
+#-- 14. -n update：一个字节都不该落地 ------------------------------------
+# 改动之前 cmd_update 完全不看 $DRY：-n 会真的下载、真的换掉 $BIN、真的重启服务，
+# 而 ask() 在 DRY=1 时又是直接取默认值（升级确认默认就是 y），一个确认点都不停。
+setup
+before=$(sig "$(BIN)")
+sb -n update
+if [ "$CODE" = 0 ] && [ "$(sig "$(BIN)")" = "$before" ] && [ ! -e "$(BIN).prev" ] \
+   && grep -q "dry-run" "$LOG"; then
+  ok "-n update：退出 0，\$BIN 一个字节没动，没有产生 .prev"
+else
+  ng "-n update：期望 0 且 \$BIN 原封不动（退出 ${CODE}，.prev 存在=$([ -e "$(BIN).prev" ] \
+      && echo 是 || echo 否)）"
+fi
+
+#-- 15. -n rollback：同样不该落地 ----------------------------------------
+setup
+sb update                       # 先制造一个 .prev
+before=$(sig "$(BIN)")
+beforeprev=$(sig "$(BIN).prev")
+sb -n rollback
+if [ "$CODE" = 0 ] && [ "$(sig "$(BIN)")" = "$before" ] \
+   && [ "$(sig "$(BIN).prev")" = "$beforeprev" ]; then
+  ok "-n rollback：退出 0，\$BIN 与 .prev 都原封不动"
+else
+  ng "-n rollback：期望两个文件都不变（退出 ${CODE}）"
+fi
+
+#-- 16. 下载物 sha256 对不上：必须当场死，不能装上去 ----------------------
+# 直连 github 拿到的都对不上就没有再试下去的意义了，且绝不能 sudo install。
+setup
+before=$(sig "$(BIN)")
+SB_FAKE_BAD_SHA=1 sb update
+if [ "$CODE" != 0 ] && [ "$(sig "$(BIN)")" = "$before" ] \
+   && grep -q "sha256 不匹配" "$LOG"; then
+  ok "sha256 对不上：非 0 退出，\$BIN 未被触碰"
+else
+  ng "sha256 对不上：期望非 0 且 \$BIN 原封不动（退出 ${CODE}）"
+fi
+
+#-- 17. asset 没有 digest 字段：降级放行，不是硬失败 ----------------------
+# 老 release 就是这个形态。校验不了要说清楚，但不该把升级堵死。
+setup
+SB_FAKE_NO_DIGEST=1 sb update
+if [ "$CODE" = 0 ] && [ "$(bin_version "$(BIN)")" = "$NEW" ] \
+   && grep -q "不做完整性校验" "$LOG"; then
+  ok "asset 无 digest：警告后照常升级，退出 0"
+else
+  ng "asset 无 digest：期望 0 且升级完成（退出 ${CODE}）"
+fi
+
+#-- 18. 正常路径确实做了校验（别让上面那条降级把校验整个绕过去）-----------
+setup
+sb update
+if [ "$CODE" = 0 ] && grep -q "sha256 校验通过" "$LOG"; then
+  ok "正常路径：日志里有「sha256 校验通过」，校验确实跑了"
+else
+  ng "正常路径：期望日志出现「sha256 校验通过」（退出 ${CODE}）"
 fi
 
 echo

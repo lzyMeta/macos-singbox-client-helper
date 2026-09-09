@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # 假 dig。_sb_resolve_a 的第 1 级。
 #   SB_FAKE_DIG_FAIL=1   解析失败（空输出 + 非 0），用来驱动降级链
-#   SB_FAKE_DIG_IP=<ip>  改写返回的 A 记录，用来驱动污染判定
+#   SB_FAKE_DIG_IP=<ip>[,<ip>...]  改写返回的 A 记录，用来驱动污染判定。
+#                        逗号分隔即多条 —— 真 dig +short 就是一行一条，
+#                        而污染地址不在第一条时的漏检正是要钉住的事。
 [ "${SB_FAKE_DIG_FAIL:-}" = 1 ] && exit 1
 # 默认给一个不在污染名单（157.240.* / 31.13.*）里的结果。
-echo "${SB_FAKE_DIG_IP:-142.250.196.132}"
+printf '%s\n' "${SB_FAKE_DIG_IP:-142.250.196.132}" | tr ',' '\n'
 exit 0

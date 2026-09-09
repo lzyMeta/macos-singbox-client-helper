@@ -7,6 +7,10 @@
 # 只有端口能把它们分开。
 #
 #   SB_FAKE_LATEST=<版本>            releases/latest 报告的版本
+#   SB_FAKE_BAD_SHA=1                releases/tags 报一个对不上的 digest，
+#                                    用来驱动「下载物被篡改」那条路径
+#   SB_FAKE_NO_DIGEST=1              asset 不带 digest 字段（老 release 的形态），
+#                                    用来验证降级放行而不是硬失败
 #   SB_FAKE_TARBALL=<路径>           下载内核时吐出的 tar.gz
 #   SB_FAKE_PROBE_FAIL=1             所有 URL 探测不通（模拟断网）
 #   SB_FAKE_SANDBOX_SOCKS_FAIL=1     阶段 1 沙箱建链失败
@@ -68,6 +72,19 @@ fi
 case "$url" in
   *api.github.com/repos/SagerNet/sing-box/releases/latest*)
     _emit "{\"tag_name\": \"v${SB_FAKE_LATEST:-1.14.0}\", \"name\": \"${SB_FAKE_LATEST:-1.14.0}\"}" ;;
+  *api.github.com/repos/SagerNet/sing-box/releases/tags/*)
+    # asset_digest 取的就是这里。digest 直接由 $SB_FAKE_TARBALL 算出来，
+    # 这样「正常路径」天然对得上，不用在测试里硬编码 hash。
+    _arch=$([ "$(uname -m)" = arm64 ] && echo arm64 || echo amd64)
+    _name="sing-box-${SB_FAKE_LATEST:-1.14.0}-darwin-${_arch}.tar.gz"
+    if [ "${SB_FAKE_NO_DIGEST:-}" = 1 ]; then
+      _emit "{\"assets\":[{\"name\":\"${_name}\",\"size\":1}]}"
+    elif [ "${SB_FAKE_BAD_SHA:-}" = 1 ]; then
+      _emit "{\"assets\":[{\"name\":\"${_name}\",\"digest\":\"sha256:${_bad:-0000000000000000000000000000000000000000000000000000000000000000}\"}]}"
+    else
+      _sha=$(shasum -a 256 "${SB_FAKE_TARBALL:-/dev/null}" 2>/dev/null | awk '{print $1}')
+      _emit "{\"assets\":[{\"name\":\"${_name}\",\"digest\":\"sha256:${_sha}\"}]}"
+    fi ;;
   *.tar.gz)
     [ -n "${SB_FAKE_TARBALL:-}" ] && [ -f "$SB_FAKE_TARBALL" ] || exit 22
     [ -n "$out" ] || exit 22
