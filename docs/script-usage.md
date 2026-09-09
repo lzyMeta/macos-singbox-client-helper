@@ -337,7 +337,9 @@ INFO [...] outbound/vless[vpsre]: outbound connection to <某个 tiktok 域名>:
 
 ### `doctor` — 一键诊断
 
-收集全套信息写入 `/tmp/singbox-doctor-*.txt`，并自动判读九类问题：权限不足、端口占用、规则集下载失败、FakeIP 泄漏、DNS 投毒、废弃字段、路由未接管、plist 语法、IPv6 未关。
+收集全套信息写入 `/tmp/singbox-keep-*/doctor-*.txt`（目录 0700、文件 0600 —— 转储里有访问过的域名、出站 tag 与日志），并自动判读十类问题：权限不足、端口占用、规则集下载失败、FakeIP 泄漏、DNS 投毒、废弃字段、路由未接管、plist 语法、IPv6 未关、服务未运行。
+
+退出码：0 未发现已知问题；1 命中了其中任何一条判据。
 
 **出问题先跑它**，比逐条手敲快，输出也方便贴给别人。
 
@@ -424,7 +426,11 @@ singbox config restore <备份路径>
 
 **废弃字段告警照打照记，但一个字都不自动改。** 「哪些字段该改成什么写法」需要读 release notes 和上游文档，那是另一件事。
 
-升级成功后 `$BIN.prev` **保留**，留到下一次 `update` 才被覆盖——见下面的 `rollback`。升级后会提醒跑 `rules`。
+升级成功后 `$BIN.prev` **保留**，留到下一次 `update` 才被覆盖——见下面的 `rollback`。
+
+`.prev` 只由 `update` 写。`install` 不碰它：install 内部那个「新二进制跑不起来就换回去」的临时回滚点放在临时目录里，跑完随 `TMPFILES` 一起回收。（早先两者共用 `$BIN.prev`，于是 update 成功后再跑一次 install 会把退路无声删掉。）
+
+升级后会提醒跑 `rules`。
 
 ```bash
 singbox update            # 跨 minor 时会停下来问一次

@@ -8,8 +8,8 @@
 **① 回滚点在重启之前就被删掉了。**
 
 ```bash
-sudo rm -f "$BIN.prev"      # singbox.sh:1431
-cmd_restart                 # singbox.sh:1432 —— 返回值也没有被检查
+sudo rm -f "$BIN.prev"      # 当时的 cmd_update 内
+cmd_restart                 # 同上 —— 返回值也没有被检查
 ```
 
 `sing-box check -c` 通过、但新内核起不来（或起来了但代理坏了）时，旧二进制已经不在。
@@ -59,7 +59,7 @@ cmd_restart                 # singbox.sh:1432 —— 返回值也没有被检查
 第 2/3/4/5 步依赖 `ipinfo.io` / `dig` / `cloudflare-quic.com` / `cip.cc`，一次抖动不该把一次
 成功的升级回滚掉。
 
-**成功之后 `$BIN.prev` 保留**，留到下一次 `update` 才被覆盖。这覆盖了「当时一切正常，半小时后
+**成功之后 `$BIN.prev` 保留**，留到下一次 `update` 才被覆盖（`install` 不碰它 —— 它自己的临时回滚点在临时目录里）。这覆盖了「当时一切正常，半小时后
 才发现某个网站进不去」——那时 `singbox rollback` 一条命令换回去、重启、跑一遍阶段 3 的验收。
 
 ## 不在范围内
