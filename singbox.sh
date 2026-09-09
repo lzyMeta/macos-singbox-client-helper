@@ -44,6 +44,10 @@ PREFIX="${SB_PREFIX:-/usr/local}"
 BIN="$PREFIX/bin/sing-box"
 ETC="$PREFIX/etc/sing-box"
 CFG="$ETC/config.json"
+# 脚本自己的安装位置。选 $PREFIX/bin 而不是 ~/bin，是因为它已经在所有 shell 的
+# 默认 PATH 里 —— 不用碰 ~/.zshrc，自动化才算真的做完了；而 install 本来就已经
+# need_root，不多要一次权限。
+LAUNCHER="$PREFIX/bin/singbox"
 PLIST=/Library/LaunchDaemons/sing-box.plist
 LABEL=system/sing-box
 # 日志目录。默认 /var/log，与 plist 里写死的绝对路径一致。
@@ -739,6 +743,50 @@ is_private_dns() {
   esac
 }
 
+
+# 把一份脚本安装成 $LAUNCHER（默认 /usr/local/bin/singbox）。
+# 退路语义与内核的 $BIN / $BIN.prev 完全对称：旧的先存成 .prev，再让新的就位。
+#
+# ⚠️ 就位这一步必须是 mv（rename），不能用 cp / install 直接覆盖。
+# bash 是**边执行边按偏移量读脚本文件**的：cp 覆盖的是同一个 inode，正在跑的那个
+# 进程下一次读取会读到新文件的字节流、落在错误的偏移上 —— 症状是执行到一半冒出
+# 莫名其妙的语法错误，且只在「脚本更新自己」这一条路径上出现。mv 换的是目录项，
+# 旧 inode 被 unlink 但仍被打开着，当前进程读到的还是那一份完整的旧内容。
+# singbox-selfcheck.sh 第 13 项守着这一条。
+#
+# _install_launcher <源文件> [说明]
+_install_launcher() {
+  local src="$1"
+  local desc="${2:-singbox 命令}"
+  [ -f "$src" ] || { bad "找不到要安装的脚本：$src"; return 1; }
+
+  if [ "$DRY" = 1 ]; then
+    dim "[dry-run] 安装 ${desc} → ${LAUNCHER}（已存在则旧的先存成 ${LAUNCHER}.prev）"
+    return 0
+  fi
+
+  # 装一份语法就坏了的脚本，等于把用户的 singbox 命令弄死，而他下一次才会发现。
+  bash -n "$src" 2>/dev/null || { bad "脚本语法检查未通过，不安装：$src"; return 1; }
+
+  # 先在**目标所在的同一个文件系统**上落一份临时文件。mv 跨文件系统会退化成
+  # copy + unlink，那就又回到「覆盖同一个 inode」的老问题上了。
+  local staged="$LAUNCHER.new.$$"
+  sudo mkdir -p "$PREFIX/bin" || { bad "建不了 $PREFIX/bin"; return 1; }
+  sudo cp "$src" "$staged" || { bad "写不进 $PREFIX/bin"; return 1; }
+  sudo chmod 755 "$staged"
+  sudo xattr -d com.apple.quarantine "$staged" 2>/dev/null || true
+
+  if [ -f "$LAUNCHER" ]; then
+    sudo mv -f "$LAUNCHER" "$LAUNCHER.prev" || {
+      sudo rm -f "$staged"
+      bad "存不下旧的 ${LAUNCHER}.prev，不动 ${LAUNCHER}"
+      return 1
+    }
+  fi
+  sudo mv -f "$staged" "$LAUNCHER" || { bad "装不上 $LAUNCHER"; return 1; }
+  return 0
+}
+
 #=======================================================================
 # install
 #=======================================================================
@@ -759,7 +807,7 @@ cmd_install() {
   acquire_lock          # 不弹密码，要尽早防并发
 
   #--- 0 环境 ---
-  step "0/7  环境检查"
+  step "0/8  环境检查"
   local host_arch; host_arch=$(detect_arch)
   [ -n "$host_arch" ] || die "不支持的 CPU 架构：$(uname -m)"
   [ -n "$arch" ] || arch="$host_arch"
@@ -806,7 +854,7 @@ cmd_install() {
   fi
 
   #--- 1 内核 ---
-  step "1/7  安装 sing-box 内核"
+  step "1/8  安装 sing-box 内核"
   if [ "$need_install" = 1 ]; then
     if [ -z "$want_ver" ]; then
       info "查询最新版本…"
@@ -870,13 +918,29 @@ cmd_install() {
       || dim "不带 with_clash_api，clash_api 配置段会失效"
   fi
 
-  #--- 2 系统层 ---
-  step "2/7  macOS 系统层准备"
+  #--- 2 singbox 命令 ---
+  step "2/8  安装 singbox 命令"
+  info "装到 $LAUNCHER —— 它已经在默认 PATH 里，不必改 ~/.zshrc"
+  local self_src
+  self_src="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+  if _install_launcher "$self_src" "singbox 命令"; then
+    [ "$DRY" = 1 ] || ok "已安装到 $LAUNCHER"
+    case ":$PATH:" in
+      *":$PREFIX/bin:"*) ;;
+      *) warn "$PREFIX/bin 不在你的 PATH 里 —— 要用全路径 ${LAUNCHER}，或把该目录加进 PATH" ;;
+    esac
+  else
+    # 装不上不该拖垮整次安装：内核已经就位，用户仍可用仓库副本跑
+    warn "singbox 命令没装上 —— 不影响本次安装，之后重跑 install 可再试"
+  fi
+
+  #--- 3 系统层 ---
+  step "3/8  macOS 系统层准备"
   info "这三项配置文件管不了；不做的话后面验证一定过不去，而症状不指向真正原因。"
   _sysprep
 
-  #--- 3 配置 ---
-  step "3/7  放置配置文件"
+  #--- 4 配置 ---
+  step "4/8  放置配置文件"
   # 工作副本，避免直接改用户的源文件
   local work; work=$(mktmp)
   cp "$src_cfg" "$work"
@@ -929,8 +993,8 @@ PY
   run "sudo chmod 644 '$CFG'"
   ok "配置已就位：$CFG"
 
-  #--- 4 校验 ---
-  step "4/7  静态校验"
+  #--- 5 校验 ---
+  step "5/8  静态校验"
   if [ "$DRY" = 0 ]; then
     local chklog; chklog=$(mktmp)
     if sudo "$BIN" check -c "$CFG" >"$chklog" 2>&1; then
@@ -947,8 +1011,8 @@ PY
     fi
   fi
 
-  #--- 5 前台试跑 ---
-  step "5/7  前台试跑"
+  #--- 6 前台试跑 ---
+  step "6/8  前台试跑"
   if [ "$DRY" = 0 ] && ask "前台跑 25 秒，观察规则集下载与 TUN 建立？" y; then
     _stop_all_instances
     local rlog; rlog=$(mktmp)
@@ -980,8 +1044,8 @@ PY
     _diagnose_log "$rlog" && ok "试跑未发现致命问题"
   fi
 
-  #--- 6 服务 ---
-  step "6/7  安装 LaunchDaemon"
+  #--- 7 服务 ---
+  step "7/8  安装 LaunchDaemon"
   _stop_all_instances
   run "sudo launchctl bootout '$LABEL' 2>/dev/null || true"
 
@@ -1030,8 +1094,8 @@ PLISTEOF
     fi
   fi
 
-  #--- 7 验证 ---
-  step "7/7  验证"
+  #--- 8 验证 ---
+  step "8/8  验证"
   # install 的退出码保持 0：验证没过不等于安装没成。但也不能让「安装完成」这句
   # 全绿的口吻盖过上面刚打的那一堆 ✗ —— 按 verify 的两档结果分叉措辞。
   local vrc=0
@@ -2371,6 +2435,7 @@ cmd_rollback() {
 
   if [ "$DRY" = 1 ]; then
     dim "[dry-run] mv ${BIN}.prev → ${BIN}，重启，再跑一遍 verify 验收"
+    dim "[dry-run] 有 ${LAUNCHER}.prev 的话，singbox 命令一并退回上一版"
     info "以上均未执行。"
     return 0
   fi
@@ -2378,6 +2443,19 @@ cmd_rollback() {
   sudo mv "$BIN.prev" "$BIN" || die "回滚失败：换不回 ${BIN}"
   sudo xattr -d com.apple.quarantine "$BIN" 2>/dev/null || true
   ok "已换回 ${prev:-旧版本}"
+
+  # 内核与启动器各有各的 .prev，退路是独立的。只退内核而不退命令，下次跑的仍是
+  # 新脚本 —— 等于只退了一半，而终端上看不出来。
+  if [ -f "$LAUNCHER.prev" ]; then
+    if sudo mv -f "$LAUNCHER.prev" "$LAUNCHER"; then
+      ok "singbox 命令已退回上一版（${LAUNCHER}）"
+    else
+      warn "内核已退回，但换不回 ${LAUNCHER} —— 手工：sudo mv ${LAUNCHER}.prev ${LAUNCHER}"
+    fi
+  else
+    info "没有 ${LAUNCHER}.prev —— singbox 命令没有退路，本次只退了内核"
+  fi
+
   cmd_restart || die "回滚后重启失败 —— 跑 $(basename "$0") doctor"
   _sb_health || warn "健康检查未全过"
 
@@ -2586,6 +2664,20 @@ cmd_uninstall() {
       dim "手动还原：sudo networksetup -setv6automatic \"<服务名>\""
     fi
   fi
+
+  # 整个流程的最后一条语句：删掉 install 自动放进去的那个命令。
+  # 不问 —— 装的时候没问过，装启动器是 install 的一部分而不是可选项。
+  #
+  # 跑的就是 $LAUNCHER 自己时也是安全的：rm 是 unlink，不影响本进程已经打开的 fd，
+  # 目录项没了而 inode 还在，剩下的语句照常从旧内容里读出来执行。
+  if [ -e "$LAUNCHER" ] || [ -e "$LAUNCHER.prev" ]; then
+    echo
+    if sudo rm -f "$LAUNCHER" "$LAUNCHER.prev"; then
+      ok "singbox 命令已移除（${LAUNCHER}）"
+    else
+      warn "删不掉 ${LAUNCHER} —— 手工：sudo rm -f ${LAUNCHER} ${LAUNCHER}.prev"
+    fi
+  fi
 }
 
 # 清理散落在别处的运行残留。
@@ -2721,8 +2813,11 @@ while [ $# -gt 0 ]; do
     -y|--yes)     ASSUME_YES=1; shift ;;
     -q|--quiet)   QUIET=1; shift ;;
     -n|--dry-run) DRY=1; shift ;;
+    # ⚠️ 这一行重算的四个路径要齐：LAUNCHER 漏了就会出现「内核装进 /opt、
+    # 命令装进 /usr/local」。而它们必须与 shift 2 共一行（或紧跟在 || die 那行下面）：
+    # 自检第 8 项盯的就是「shift 2 前一行有没有 die 护栏」，拆行会把那道守卫弄丢。
     --prefix)     PREFIX="${2:-}"; [ -n "$PREFIX" ] || die "--prefix 需要参数"
-                  BIN="$PREFIX/bin/sing-box"; ETC="$PREFIX/etc/sing-box"; CFG="$ETC/config.json"; shift 2 ;;
+                  BIN="$PREFIX/bin/sing-box"; ETC="$PREFIX/etc/sing-box"; CFG="$ETC/config.json"; LAUNCHER="$PREFIX/bin/singbox"; shift 2 ;;
     -h|--help)    cmd_help; exit 0 ;;
     --version)    if [ -z "$CMD" ]; then echo "singbox.sh v$VERSION"; exit 0; fi
                   [ -n "${2:-}" ] || die "--version 需要参数，如 --version 1.14.0"

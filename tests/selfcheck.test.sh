@@ -34,7 +34,8 @@ echo "验证 $SELFCHECK 的检查项是否真的在检查"
 # a) 检查器自身不得报工具用法错误
 for f in clean.sh bad-fullwidth.sh bad-array.sh bad-gnu.sh bad-shift2.sh \
          bad-localself.sh bad-grepc.sh bad-nested.sh bad-bash4.sh \
-         bad-mktemp.sh bad-kill9.sh bad-launchctl.sh bad-syntax.sh; do
+         bad-mktemp.sh bad-kill9.sh bad-launchctl.sh bad-syntax.sh \
+         bad-cp-launcher.sh good-mv-launcher.sh; do
   run "$FIX/$f"
   if printf '%s' "$out" | grep -qE 'invalid option|illegal option|usage: grep'; then
     ng "${f}：检查器自身报了工具用法错误" "$out"
@@ -141,6 +142,31 @@ if [ "$code" != 0 ] && printf '%s' "$out" | grep -qF 'syntax error'; then
   ok "bad-syntax.sh：点名了bash 语法错误"
 else
   ng "bad-syntax.sh：期望点名bash 语法错误（退出码 ${code}）" "$out"
+fi
+
+# c13) 第 13 项：cp / install 直接覆盖 $LAUNCHER 必须被点名。
+#      这一项防的是「脚本更新自己」时覆盖同一个 inode —— 正在跑的进程会读到
+#      新文件的字节流、落在错误的偏移上。没有这个样本它就可能恒绿。
+run "$FIX/bad-cp-launcher.sh"
+if [ "$code" != 0 ] && printf '%s' "$out" | grep -qF 'cp "$tmp" "$LAUNCHER"'; then
+  ok "bad-cp-launcher.sh：点名了 cp 直接覆盖 \$LAUNCHER"
+else
+  ng "bad-cp-launcher.sh：期望点名 cp 直接覆盖 \$LAUNCHER（退出码 ${code}）" "$out"
+fi
+
+if printf '%s' "$out" | grep -qF 'install -m 755 "$tmp" "$LAUNCHER"'; then
+  ok "bad-cp-launcher.sh：也点名了 install -m 直接覆盖（|| exit 挡不住）"
+else
+  ng "bad-cp-launcher.sh：期望同时点名 install -m 直接覆盖" "$out"
+fi
+
+# c14) 反向：mv 到 $LAUNCHER、以及以 .prev 为目标 / 以 $LAUNCHER 为来源的 cp
+#      都是合法写法，一个都不许报 —— 否则第 13 项就是恒红。
+run "$FIX/good-mv-launcher.sh"
+if [ "$code" = 0 ]; then
+  ok "good-mv-launcher.sh：mv 到 \$LAUNCHER 与 .prev 备份都不误报，退出 0"
+else
+  ng "good-mv-launcher.sh：期望退出 0，实际 ${code}" "$out"
 fi
 
 echo

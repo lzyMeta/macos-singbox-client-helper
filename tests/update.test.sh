@@ -12,7 +12,7 @@
 set -uo pipefail
 
 cd "$(dirname "$0")/.." || exit 1
-SB=./singbox.sh
+SB="${SB_UNDER_TEST:-./singbox.sh}"   # 换成旧版脚本即可验证某条断言不是恒绿的
 FIXBIN="$PWD/tests/fixtures/bin"
 FAKE="$PWD/tests/fixtures/fake-sing-box"
 OLD=1.13.18
@@ -354,6 +354,40 @@ if [ "$CODE" = 0 ] && grep -q "sha256 校验通过" "$LOG"; then
   ok "正常路径：日志里有「sha256 校验通过」，校验确实跑了"
 else
   ng "正常路径：期望日志出现「sha256 校验通过」（退出 ${CODE}）"
+fi
+
+#-- 19. rollback 同时退内核与启动器 --------------------------------------
+# 两者各有各的 .prev，退路是独立的。只退内核而不退命令，下次跑的仍是新脚本 ——
+# 等于只退了一半，而终端上完全看不出来。
+setup
+LAUNCHER="$ROOT/prefix/bin/singbox"
+sb update                                        # 先制造内核的 .prev
+printf '#!/usr/bin/env bash\necho 旧启动器\n' > "$LAUNCHER.prev"
+printf '#!/usr/bin/env bash\necho 新启动器\n' > "$LAUNCHER"
+chmod 755 "$LAUNCHER" "$LAUNCHER.prev"
+oldlauncher=$(sig "$LAUNCHER.prev")
+sb rollback
+if [ "$(bin_version "$(BIN)")" = "$OLD" ] \
+   && [ "$(sig "$LAUNCHER")" = "$oldlauncher" ] && [ ! -e "$LAUNCHER.prev" ]; then
+  ok "rollback：内核与 singbox 命令一起退回上一版"
+else
+  ng "rollback：期望启动器也退回（内核=$(bin_version "$(BIN)")，.prev 还在=$([ -e "$LAUNCHER.prev" ] \
+      && echo 是 || echo 否)）"
+fi
+
+#-- 20. 只有内核有 .prev、启动器没有：只退内核，并说明它没有退路 ----------
+setup
+LAUNCHER="$ROOT/prefix/bin/singbox"
+sb update
+printf '#!/usr/bin/env bash\necho 新启动器\n' > "$LAUNCHER"
+chmod 755 "$LAUNCHER"
+before=$(sig "$LAUNCHER")
+sb rollback
+if [ "$(bin_version "$(BIN)")" = "$OLD" ] && [ "$(sig "$LAUNCHER")" = "$before" ] \
+   && grep -qF "没有退路" "$LOG"; then
+  ok "rollback 启动器无 .prev：只退内核，且说明了命令没有退路"
+else
+  ng "rollback 启动器无 .prev：期望内核退回、启动器不变、日志说明（内核=$(bin_version "$(BIN)")）"
 fi
 
 echo

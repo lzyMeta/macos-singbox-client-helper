@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# 假 scutil。_sysprep 2.3 只用 `scutil --nc list` 数已连接的 VPN。
+# 默认一个都没有；SB_FAKE_NC_CONNECTED=1 时报一个，用来驱动那条 warn。
+case "${1:-}" in
+  --nc) [ "${SB_FAKE_NC_CONNECTED:-}" = 1 ] && echo "* (Connected) 0000 PPP (L2TP) \"Office\""
+        exit 0 ;;
+esac
+exit 0

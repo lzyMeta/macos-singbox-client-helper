@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# 假 networksetup。_sysprep 会问四件事：有哪些网络服务、每个的 IPv6 与 DNS 现状、
+# 然后把 IPv6 关掉、DNS 指向代理地址。写操作一律吞掉——测试不碰真实网络配置。
+#
+#   SB_FAKE_SERVICES=<换行分隔>   服务列表，默认单个 "Wi-Fi"
+#   SB_FAKE_DNS=<地址>            -getdnsservers 报告的地址，默认 192.168.1.1（内网，会触发提示）
+case "${1:-}" in
+  -listallnetworkservices)
+    echo "An asterisk (*) denotes that a network service is disabled."
+    printf '%s\n' "${SB_FAKE_SERVICES:-Wi-Fi}" ;;
+  -getinfo)
+    echo "DHCP Configuration"
+    echo "IP address: 192.168.1.20"
+    echo "IPv6: ${SB_FAKE_IPV6:-Automatic}" ;;
+  -getdnsservers)
+    printf '%s\n' "${SB_FAKE_DNS:-192.168.1.1}" ;;
+  -setv6off|-setv6automatic|-setdnsservers) exit 0 ;;
+  *) exit 0 ;;
+esac
+exit 0

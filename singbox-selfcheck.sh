@@ -67,6 +67,32 @@ chk "同一条 local 语句里引用刚声明的变量" \
 # 缩进更深的嵌套定义，这一项会恒绿。
 chk "trap 函数内嵌定义（会捕获 local，退出时失效）" \
     bash -c "awk '/^[a-z_]+\\(\\) \\{/{f=1} f&&/^[[:space:]]+[a-z_]+\\(\\) \\{/{print NR\": \"\$0} /^\\}/{f=0}' '$F' || true"
+# $LAUNCHER 是**正在执行的这个脚本自己**。bash 边执行边按偏移量读脚本文件，
+# cp / install 覆盖的是同一个 inode，当前进程下一次读取会落在新内容的错误偏移上 ——
+# 症状是执行到一半冒出莫名其妙的语法错误，且只在「脚本更新自己」这条路径上出现。
+# 必须用 mv：换的是目录项，旧 inode 被 unlink 但仍被打开着，读到的还是完整的旧内容。
+#
+# ⚠️ 只报「$LAUNCHER 作为目标」。以它为**来源**的 cp、以及目标是 $LAUNCHER.prev 的 cp
+# 都是合法写法，报了这一项就是恒红 —— tests/fixtures/good-mv-launcher.sh 钉的就是这个。
+chk "cp / install 直接覆盖 \$LAUNCHER（同 inode）" \
+    awk '
+      { raw = $0; sub(/^[[:space:]]+/, "", raw) }
+      raw ~ /^#/ { next }
+      {
+        line = $0
+        sub(/[[:space:]]#.*$/, "", line)       # 行尾注释不算违规
+        n = split(line, seg, /[|;&]+/)         # || && ; | & 各自断开一条命令，
+        for (i = 1; i <= n; i++) {             # 免得 `x && cp ... $LAUNCHER` 从旁边溜过去
+          s = seg[i]
+          sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s)
+          if (s !~ /(^|[^A-Za-z0-9_])(cp|install)[[:space:]]/) continue
+          m = split(s, a, /[[:space:]]+/)
+          last = a[m]                          # 最后一个词就是目标路径
+          gsub(/"/, "", last)
+          if (last ~ /\$\{?LAUNCHER\}?$/) { print NR": " $0; break }
+        }
+      }' "$F"
+
 chk "bash 语法" bash -n "$F"
 echo
 [ "$fail" = 0 ] && echo "全部通过" || { echo "有项目未通过"; exit 1; }
