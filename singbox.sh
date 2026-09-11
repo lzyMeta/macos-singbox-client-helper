@@ -2773,7 +2773,10 @@ if runlog and complete == "1" and not any(r["eid"] == "legacy_address_filter" fo
 def enc(sn):
     return "" if not sn else sn.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
 
-rows.sort(key=lambda r: (-RANK[r["tier"]], r["path"] in ("-", ""), r["path"]))
+def natkey(p):
+    # rule_set[10] 要排在 rule_set[2] 之后：把路径里的数字段按整数比
+    return [int(x) if x.isdigit() else x for x in re.split(r"(\d+)", p)]
+rows.sort(key=lambda r: (-RANK[r["tier"]], r["path"] in ("-", ""), natkey(r["path"])))
 for r in rows:
     src = "+".join(x for x in SRC_ORDER if x in r["src"])
     out = [r["tier"], src, r["path"], r["desc"], r["url"]]
@@ -3153,7 +3156,9 @@ _cfg_audit_report() {
   done <"$rows"
 
   if [ "$n_removed" -gt 0 ]; then
-    bad "${n_removed} 项已被本版本内核移除，配置起不来"
+    # removed 档 = 内核拒绝：unknown field 是已移除的字段，其余 FATAL（无效值、引用不存在的 tag…）
+    # 也在这一档——退出码 1 的语义是「配置起不来」，不是「有已移除字段」
+    bad "${n_removed} 项被本版本内核拒绝（已移除的字段或无效值），配置起不来"
     return 1
   fi
   if [ "$n_deprecated" -gt 0 ]; then

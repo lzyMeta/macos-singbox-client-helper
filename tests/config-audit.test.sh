@@ -970,6 +970,23 @@ else
 fi
 unset SB_FAKE_RUN_LOG SB_FAKE_UDP
 
+#-- R4. 路径按自然序：rule_set[10] 排在 rule_set[2] 之后 ------------------------------
+setup
+cp "$FIX/bad-download-detour.json" "$ROOT/many.json"
+python3 - "$ROOT/many.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); rs = d["route"]["rule_set"]; tpl = rs[0]
+d["route"]["rule_set"] = [dict(tpl, tag="rs%d" % i) for i in range(11)]
+json.dump(d, open(sys.argv[1], "w"), indent=2)
+PY
+audit --config "$ROOT/many.json"
+order=$(grep -o 'route.rule_set\[[0-9]*\]' "$LOG" | sed 's/[^0-9]//g' | tr '\n' ' ')
+if [ "$order" = "0 1 2 3 4 5 6 7 8 9 10 " ]; then
+  ok "路径自然排序：0…9 之后才是 10"
+else
+  ng "路径排序不是自然序：${order}"
+fi
+
 echo
 printf '通过 %d，失败 %d\n' "$pass" "$fail"
 [ "$fail" = 0 ]
