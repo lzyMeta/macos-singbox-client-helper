@@ -1176,10 +1176,9 @@ PY
         info "提示：多为悬空引用 —— dns.rules / route.rules 引用了 route.rule_set 里没定义的 tag"
       die "配置校验未通过，修正后重跑"
     fi
-    if grep -qi deprecated "$chklog"; then
-      warn "存在废弃字段告警（不阻止启动，但可能已静默降级）："
-      grep -i deprecated "$chklog" | sed 's/^/        /' >&2
-    fi
+    # 走发现层而不是 grep $chklog：check 对 route.rule_set[].download_detour
+    # 一个字都不打（实测 1.14.0），只看 check 输出等于对它全程失明。
+    _cfg_audit_notice "$CFG"
   fi
 
   #--- 6 前台试跑 ---
@@ -1662,7 +1661,7 @@ cmd_verify() {
   running || { bad "服务未运行 —— 先 $(basename "$0") start"; return 1; }
   local s; s=$(sock_addr)
 
-  step "1/5  节点链路（绕开 TUN）"
+  step "1/6  节点链路（绕开 TUN）"
   local ip_socks
   ip_socks=$(curl -s --max-time 12 -x "socks5h://$s" https://api.ipify.org 2>/dev/null)
   if [ -n "$ip_socks" ]; then
@@ -1673,7 +1672,7 @@ cmd_verify() {
     return 1
   fi
 
-  step "2/5  出口 IP 分流"
+  step "2/6  出口 IP 分流"
   local ip_main ip_soc org i
   ip_main=$(curl -s --max-time 12 https://api.ipify.org 2>/dev/null)
   # ipinfo.io 不换域名——它被写死在配置的 vpsre 社交组里，是分流判定的固定参照物，
@@ -1711,7 +1710,7 @@ except Exception: print("")' 2>/dev/null)
     dim "确认上面的 org 是住宅运营商而非机房"
   fi
 
-  step "3/5  DNS 防泄漏"
+  step "3/6  DNS 防泄漏"
   local g
   if g=$(_sb_resolve_a www.google.com); then
     g=$(printf '%s' "$g" | tr '\n' ' ')
@@ -1735,7 +1734,7 @@ except Exception: print("")' 2>/dev/null)
   fi
   dim "浏览器验证：dnsleaktest.com 的 Extended Test 不应出现本地运营商"
 
-  step "4/5  IPv6 与 QUIC"
+  step "4/6  IPv6 与 QUIC"
   local v6; v6=$(ifconfig 2>/dev/null | grep inet6 | grep -v 'fe80::' | grep -v '::1 ')
   [ -z "$v6" ] && ok "无全局 IPv6" || vbad "存在全局 IPv6 —— 跑 syscheck"
   if _sb_quic_open; then
@@ -1750,7 +1749,7 @@ except Exception: print("")' 2>/dev/null)
     info "先确认能上网；断网或 UDP 被全阻时，「已阻断」和「测不了」长得一模一样"
   fi
 
-  step "5/5  国内直连与局域网"
+  step "5/6  国内直连与局域网"
   local cn cn_ip cn_desc
   if cn=$(_sb_fetch_cn_ip); then
     cn_ip="${cn%%|*}"; cn_desc="${cn#*|}"
@@ -1783,7 +1782,27 @@ except Exception: print("")' 2>/dev/null)
     fi
   fi
 
-  # 退出码要如实反映五步的结果，并且要能分辨「回滚有用」和「回滚白搭」：
+  #--- 6 配置现代性 -------------------------------------------------------
+  step "6/6  配置现代性"
+  # 挂**策略档**而不是链路档：废弃字段不会让链路断，回滚内核也换不回来 ——
+  # 它是「将来会坏」，不是「现在就坏」。这跟 _sb_verify_rounds 的取舍一致：
+  # 返回 2 不触发回滚，返回 1 才触发。判成链路档会让一次好端端的升级被回滚掉。
+  local audit_rows; audit_rows=$(mktmp)
+  if ! _cfg_audit "$CFG" >"$audit_rows" 2>/dev/null; then
+    # 审不了 ≠ 有问题。判成 vpbad 会让一次干净的 verify 退 2，而 update 的
+    # 阶段 3 读的正是这个退出码。
+    info "配置现代性：这次没审成（读不到 ${CFG}，或内核跑不起来），跳过"
+  else
+  local n_audit; n_audit=$(wc -l <"$audit_rows" | tr -d ' ')
+  if [ "${n_audit:-0}" = 0 ]; then
+    ok "配置里没有废弃字段，也没有未知键"
+  else
+    vpbad "配置里有 ${n_audit} 处废弃/未知字段 —— 跑 $(basename "$0") config audit"
+    sed 's/^/        /' "$audit_rows" | cut -c1-160 >&2
+  fi
+  fi
+
+  # 退出码要如实反映六步的结果，并且要能分辨「回滚有用」和「回滚白搭」：
   #   0 全过 / 1 链路档失败（该回滚）/ 2 仅策略档失败（不该回滚）
   # 两档都失败时报 1，链路优先——链路都断了，策略上的结论没有参考价值。
   [ "$VERIFY_BAD" -gt 0 ] && return 1
@@ -1988,7 +2007,7 @@ cmd_edit() {
     dim "该文件含节点凭据，目录权限 700；处理完请自行删除"
     return 1
   fi
-  grep -qi deprecated "$chk" && warn "存在废弃字段告警（不阻止启动）"
+  _cfg_audit_notice "$tmp"
   ok "校验通过"
 
   if [ "$DRY" = 1 ]; then
@@ -2002,6 +2021,496 @@ cmd_edit() {
   sudo cp "$tmp" "$CFG" || die "写入 $CFG 失败，配置未改动（备份仍在）"
   sudo chown root:wheel "$CFG"; sudo chmod 644 "$CFG"
   cmd_restart
+}
+
+#=======================================================================
+# config audit —— 配置的废弃与合法性审查
+#=======================================================================
+# 两路合流，互补彼此的盲区。两条都只读、毫秒级、不要 root、不碰网络：
+#
+#   check 档   `sing-box check` 说的话：废弃但仍接受（WARN，自带官方 migration
+#              链接）、已被移除（FATAL，退 1）
+#   schema 档  `sing-box schema` 里不存在的键。schema 生成器剔除了全部废弃字段，
+#              所以「未知键」≈ 废弃 ∪ 已移除 ∪ 拼错
+#
+# 为什么非要两路：实测 1.14.0 的 check 对 route.rule_set[].download_detour
+# **一个字都不打**（退 0、无输出），而内核每次 run 都往 err 日志里写 deprecated
+# 告警。本脚本原先四处 grep 全都只看 check 输出，于是这条告警对脚本完全不可见 ——
+# 到 1.16.0 字段真被移除那天，check 会从沉默直接跳到 FATAL，配置一次都起不来。
+#
+# ⚠️ 找废弃键**不能靠子串计数**。真内核 schema 里 "download_detour" 的子串命中数
+# 是 1，那一处是 experimental.clash_api.external_ui_download_detour —— 一个 1.14.0
+# 仍然有效的字段。所以 schema 档走结构化键路径比对：按 type 的 const 选定 oneOf
+# 分支，再对该分支的 properties 求键差。
+
+# 每条发现一行，TAB 分隔，供调用方自行渲染：
+#   <tier>\t<source>\t<json 路径>\t<说明>\t<官方迁移链接或空>
+# tier ∈ removed（对应退 1）/ deprecated（对应退 2）；source ∈ check / schema
+#
+# $1 配置路径。
+#
+# ⚠️ **不用 sudo。** 需求写明发现层「只读、毫秒级、不要 root、不碰网络」，而
+# `sing-box check -c` 本来就只读配置，不需要提权（$CFG 是 644）。更要紧的是
+# cmd_verify 原先通篇没有一次 sudo —— 一个只读诊断命令不该因为多了一步配置审查
+# 就开始要密码，在无 TTY 的环境（cron、ssh host singbox verify）里那等于必然失败。
+#
+# 返回值：0 = 审完了（发现写在 stdout），1 = **审不了**（读不到配置、内核起不来）。
+# 这两件事必须分开：把「审不了」报成发现，就是把「配置已经坏了」这个结论强加给
+# 一次根本没做成的检查。
+_cfg_audit() {
+  local cfg="$1"
+  local chk rc
+
+  # 前置闸门：内核得先能应答。$BIN 损坏、权限不对、根本没装的时候 check 同样
+  # 退非 0，而那种失败长得跟「内核拒绝配置」一模一样 —— 不先分开，一个装坏了的
+  # 内核会被报成「配置里有已移除字段」，结论完全是误导的。
+  local kver
+  kver=$("$BIN" version 2>/dev/null | head -1 | awk '{print $3}')
+  # 返回 1（审不了）而不是 0（审完了，没发现）—— 内核问不出版本号的时候打一句
+  # 「配置里没有废弃字段」，跟把 sudo 的报错当成发现是同一类误导，只是方向相反。
+  [ -n "$kver" ] || return 1
+
+  #--- check 档 ---------------------------------------------------------
+  [ -r "$cfg" ] || return 1
+  chk=$("$BIN" check -c "$cfg" 2>&1); rc=$?
+
+  if [ "$rc" != 0 ]; then
+    # 退非 0 有两种完全不同的含义，必须先分开：
+    #   内核拒绝了配置        → 这是发现（tier=removed）
+    #   审查本身没做成        → 这不是发现，是「审不了」
+    # 判据是输出像不像内核自己的诊断。不分开的话，任何让 check 跑不成的原因
+    # （文件读不到、内核损坏、sudo 要密码）都会被报成「配置里有已移除字段」，
+    # 而那个结论会一路传到 verify 的退出码上去。
+    local names
+    names=$(printf '%s\n' "$chk" | sed -n 's/.*unknown field \([A-Za-z0-9_]*\).*/\1/p' | sort -u)
+    if [ -n "$names" ]; then
+      printf '%s\n' "$names" | while IFS= read -r n; do
+        [ -n "$n" ] || continue
+        printf 'removed\tcheck\t%s\t内核拒绝该字段（已从本版本移除）\t%s\n' \
+               "$n" "https://sing-box.sagernet.org/deprecated/"
+      done
+    elif printf '%s\n' "$chk" | grep -q 'FATAL'; then
+      # 是内核在说话，只是不是 unknown field 那个形状。整行原文奉上 ——
+      # 宁可信息糙，也不编一个键路径出来。
+      printf '%s\n' "$chk" | while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        printf 'removed\tcheck\t-\t%s\t%s\n' "$line" "https://sing-box.sagernet.org/deprecated/"
+      done
+    else
+      return 1        # 不是内核在说话 —— 审不了，不是配置坏了
+    fi
+  else
+    # 退 0 但有话说 = 废弃仍接受。官方 WARN 自带 migration 锚点，原样带出去。
+    printf '%s\n' "$chk" | grep -i deprecated 2>/dev/null | while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      local url
+      url=$(printf '%s\n' "$line" | sed -n 's|.*\(https://sing-box\.sagernet\.org/migration/[^ ]*\).*|\1|p')
+      printf 'deprecated\tcheck\t-\t%s\t%s\n' "$line" "$url"
+    done
+  fi
+
+  #--- schema 档 --------------------------------------------------------
+  # 内核 < 1.14.0 的 schema 是否同样剔除废弃字段，手上没有老内核可实测。闸门保守：
+  # 低于 1.14.0 就只信 check 档，不拿一个没验过的前提去报废弃。
+  if ver_gt 1.14.0 "$kver"; then
+    return 0
+  fi
+
+  local sch; sch=$(mktmp)
+  "$BIN" schema >"$sch" 2>/dev/null || return 0
+  [ -s "$sch" ] || return 0
+
+  python3 - "$cfg" "$sch" <<'PY'
+import json, sys
+
+cfg_path, schema_path = sys.argv[1], sys.argv[2]
+try:
+    cfg = json.load(open(cfg_path))
+    sch = json.load(open(schema_path))
+except Exception:
+    sys.exit(0)          # 配置本身不是合法 JSON —— 那是 check 档的活，这里不抢
+
+defs = sch.get("$defs", sch.get("definitions", {}))
+
+DEPRECATED_URL = "https://sing-box.sagernet.org/deprecated/"
+# 只收录有明确迁移路径、且本脚本实测过的键。表外的未知键一律只说「schema 不认识」，
+# 不猜它该改成什么 —— 猜出来的迁移建议没有任何东西给它背书。
+KNOWN = {
+    "download_detour": (
+        "1.14.0 起废弃，应改用内联 http_client；1.16.0 移除",
+        "https://sing-box.sagernet.org/migration/"
+        "#migrate-legacy-download-detour-to-http-client"),
+}
+
+def deref(node, depth=0):
+    while isinstance(node, dict) and "$ref" in node and depth < 64:
+        ref = node["$ref"]
+        if not ref.startswith("#/$defs/") and not ref.startswith("#/definitions/"):
+            return {}
+        node = defs.get(ref.rsplit("/", 1)[-1], {})
+        depth += 1
+    return node if isinstance(node, dict) else {}
+
+def json_type(v):
+    if isinstance(v, bool):  return "boolean"      # bool 是 int 的子类，必须先判
+    if isinstance(v, dict):  return "object"
+    if isinstance(v, list):  return "array"
+    if isinstance(v, str):   return "string"
+    if isinstance(v, (int, float)): return "number"
+    return "null"
+
+def pick_by_const(branches, value):
+    """按 discriminator 选分支。RuleSet 的三分支（inline/local/remote）走这条。
+
+    ⚠️ 判别键冲突必须能**否决**整个分支，不能「命中任意一个就算数」：
+    RuleSet 的 local 与 remote 分支都有 format:enum["source","binary"]，
+    一条 {"type":"remote", "format":"binary", ...} 若只看「有没有键命中」，
+    会先撞上 local 分支——于是 url / update_interval / http_client 三个
+    remote 独有的合法键全被报成「schema 不认识」。
+
+    另注意 inline 分支的 type 是 enum ["inline", ""]，而 inline 条目通常压根
+    不写 type —— 所以「配置里没这个键」在 allowed 含 "" 时要算隐式命中。"""
+    if not isinstance(value, dict):
+        return None
+    for b in branches:
+        bd = deref(b)
+        props = bd.get("properties", {})
+        vetoed = False
+        hits = 0
+        for k, spec in props.items():
+            spec = deref(spec)
+            if "const" in spec:
+                allowed = [spec["const"]]
+            elif "enum" in spec:
+                allowed = spec["enum"]
+            else:
+                continue
+            if k in value:
+                if value[k] in allowed:
+                    hits += 1
+                else:
+                    vetoed = True
+                    break
+            elif "" in allowed:
+                hits += 1
+        if not vetoed and hits:
+            return bd
+    return None
+
+def pick_by_type(branches, value):
+    want = json_type(value)
+    for b in branches:
+        bd = deref(b)
+        t = bd.get("type")
+        if t == want or (isinstance(t, list) and want in t):
+            return bd
+    return None
+
+found = []
+
+def walk(value, schema, path):
+    schema = deref(schema)
+    if not isinstance(schema, dict) or not schema:
+        return
+    for comb in ("oneOf", "anyOf"):
+        if comb in schema:
+            br = pick_by_const(schema[comb], value) or pick_by_type(schema[comb], value)
+            if br is None:
+                return       # 归不到分支就收手：宁可漏报，也不报一个编出来的键路径
+            merged = dict(br)
+            for k, v in schema.items():
+                if k not in ("oneOf", "anyOf"):
+                    merged.setdefault(k, v)
+            walk(value, merged, path)
+            return
+    if isinstance(value, dict):
+        props = schema.get("properties", {})
+        extra_ok = schema.get("additionalProperties", True)
+        for k in value:
+            sub = path + "." + k if path else k
+            if k in props:
+                walk(value[k], props[k], sub)
+            elif extra_ok is False:
+                found.append(sub)
+    elif isinstance(value, list):
+        items = schema.get("items")
+        if items is not None:
+            for i, v in enumerate(value):
+                walk(v, items, "%s[%d]" % (path, i))
+
+walk(cfg, sch, "")
+
+for pth in found:
+    leaf = pth.rsplit(".", 1)[-1].split("[", 1)[0]
+    desc, url = KNOWN.get(leaf, ("schema 里没有这个键（已废弃、已移除，或拼错）",
+                                 DEPRECATED_URL))
+    sys.stdout.write("\t".join(("deprecated", "schema", pth, desc, url)) + "\n")
+PY
+}
+
+# 挂载点专用：只报，不参与调用方的退出码判定，返回值恒为 0。
+# install / update / doctor 各有各的成败判据，配置现代性不该把它们打死 —— 这也是
+# 原先那四处 grep 里唯一正确的部分，收敛时原样保留。
+_cfg_audit_notice() {
+  local cfg="$1"
+  [ -f "$cfg" ] || return 0
+  local rows; rows=$(mktmp)
+  # 审不了就闭嘴退场：这几个挂载点是搭车的，没做成的检查不该在 install / update
+  # 的输出里制造噪声，更不该把它们的成败带偏。
+  _cfg_audit "$cfg" >"$rows" 2>/dev/null || return 0
+  # ⚠️ 不写 $(grep -c ... || echo 0)：无命中时 grep 退 1，那个兜底会把计数变成
+  # "0\n0"。自检点名过这个形状。
+  local n; n=$(wc -l <"$rows" | tr -d ' ')
+  [ "${n:-0}" != 0 ] || return 0
+  warn "配置里有 ${n} 处废弃/未知字段（详情跑：$(basename "$0") config audit）："
+  local tier source path desc url
+  while IFS="$(printf '\t')" read -r tier source path desc url; do
+    [ -n "$tier" ] || continue
+    printf '        [%s/%s] %s —— %s\n' "$tier" "$source" "$path" "$desc" >&2
+  done <"$rows"
+  return 0
+}
+
+# 改写层。**只有一条规则**，逐字搬移值：
+#   route.rule_set[*].download_detour: "X"  →  http_client: {"detour": "X"}
+#
+# 用内联 http_client 对象，不引顶层 http_clients[] 数组、不设 route.default_http_client。
+# 理由是实测出来的：check 放过 tag 引用错误（http_client:"rs_dl" 而顶层 tag 是
+# "rs-dl"，check 退 0），只有真跑起来才 FATAL。内联写法没有 tag 引用，从源头免疫
+# 这一类错误；而 default_http_client 会改变所有隐式下载通道（external_ui_download、
+# 证书提供者…），影响面远超规则集，四道验收一道都挡不住。
+_cfg_migrate() {
+  local src="$1" dst="$2"
+  # 测试后门：直接拿一份现成的「改写结果」顶上，好让白名单 diff 能收到**坏的**
+  # 输入。不给这个注入点，第 1 道验收就只能被自己产出的正确结果喂——它永远绿，
+  # 也就永远测不出它到底拦不拦得住。
+  if [ -n "${SB_FAKE_MIGRATED:-}" ] && [ -f "$SB_FAKE_MIGRATED" ]; then
+    cp "$SB_FAKE_MIGRATED" "$dst"
+    return $?
+  fi
+  python3 - "$src" "$dst" <<'PY'
+import json, sys
+src, dst = sys.argv[1], sys.argv[2]
+d = json.load(open(src))
+for rs in d.get("route", {}).get("rule_set", []):
+    if not isinstance(rs, dict) or "download_detour" not in rs:
+        continue
+    # 逐字搬移：不解析、不规范化、不补默认值。值搬错是四道验收全挡不住的那一型
+    # （② 型），唯一的防线就是这一行本身精确到值。
+    rs["http_client"] = {"detour": rs.pop("download_detour")}
+json.dump(d, open(dst, "w"), ensure_ascii=False, indent=2)
+open(dst, "a").write("\n")
+PY
+}
+
+# 第 1 道验收：离线白名单结构 diff。
+# 结构 diff 而非文本 diff —— 改写会把 http_client 放到键序末尾，文本 diff 会把这个
+# 无语义的位移报成改动。
+_cfg_whitelist_diff() {
+  python3 - "$1" "$2" <<'PY'
+import json, sys
+
+def flat(o, p="", out=None):
+    if out is None:
+        out = {}
+    if isinstance(o, dict):
+        for k, v in o.items():
+            flat(v, (p + "." + k) if p else k, out)
+    elif isinstance(o, list):
+        for i, v in enumerate(o):
+            flat(v, "%s[%d]" % (p, i), out)
+    else:
+        out[p] = o
+    return out
+
+try:
+    a = flat(json.load(open(sys.argv[1])))
+    b = flat(json.load(open(sys.argv[2])))
+except Exception as e:
+    sys.stderr.write("      读不出配置：%s\n" % e)
+    sys.exit(1)
+
+MISS = object()
+problems = []
+
+for k in sorted(set(a) | set(b)):
+    av, bv = a.get(k, MISS), b.get(k, MISS)
+    if av is bv or av == bv:
+        continue
+    leaf = k.rsplit(".", 1)[-1]
+    # 允许的删除：rule_set 条目上的 download_detour，且值必须原样出现在
+    # 同一条目的 http_client.detour 上
+    if bv is MISS and leaf == "download_detour" and ".rule_set[" in k:
+        want = k.rsplit(".", 1)[0] + ".http_client.detour"
+        got = b.get(want, MISS)
+        if got is MISS:
+            problems.append("%s 被删掉了，但 %s 没有出现 —— detour 丢了" % (k, want))
+        elif got != av:
+            problems.append("%s 的值没有逐字搬移：%r → %s = %r" % (k, av, want, got))
+        continue
+    # 允许的新增：与上面配对的那个 detour
+    if av is MISS and k.endswith(".http_client.detour") and ".rule_set[" in k:
+        src = k[:-len(".http_client.detour")] + ".download_detour"
+        if a.get(src, MISS) is MISS:
+            problems.append("%s 是凭空新增的：原配置那一条并没有 download_detour" % k)
+        continue
+    problems.append("白名单外的改动：%s  %r → %r"
+                    % (k, None if av is MISS else av, None if bv is MISS else bv))
+
+if problems:
+    for x in problems:
+        sys.stderr.write("      " + x + "\n")
+    sys.exit(1)
+sys.exit(0)
+PY
+}
+
+# --apply：四道验收，缺一不可。每一道挡的是不同的错，按「改写可能出的 6 种错」
+# 逐项对照裁剪出来的：
+#   ① 白名单 diff   挡 ③ 顺手弄坏别的、⑤ 跨段污染，并对 ② 值搬错精确到值
+#   ② check         挡语法与字段合法性
+#   ③ 沙箱起得来    挡 ④ tag 引用错（check 实测放过）
+#   ④ 发现层归零    挡 ① 漏改（漏改不产生 diff、check 沉默、沙箱照样起得来）
+# 只作用于 $CFG。--config 是只读审查专用，两者互斥。
+_cfg_apply() {
+  local cfg="$CFG"
+
+  # 版本闸门：http_client 是 1.14.0 才有的键，改到老内核上等于把配置写成它不认识
+  # 的样子。发现层在老内核上会降级成只用 check 档，但改写没有降级余地，直接拒。
+  local kver
+  kver=$("$BIN" version 2>/dev/null | head -1 | awk '{print $3}')
+  [ -n "$kver" ] || die "取不到内核版本，--apply 拒绝在未知版本上改写配置"
+  if ver_gt 1.14.0 "$kver"; then
+    die "内核 ${kver} 还不认识 http_client（1.14.0 起才有），--apply 拒绝改写"
+  fi
+
+  local new; new=$(mktmp)
+  _cfg_migrate "$cfg" "$new" || die "改写失败"
+  json_valid "$new" || die "改写结果不是合法 JSON"
+
+  step "验收 1/4　白名单结构 diff"
+  if _cfg_whitelist_diff "$cfg" "$new"; then
+    ok "改动只落在 download_detour → http_client.detour 上"
+  else
+    die "改写越界，拒绝落地（${cfg} 一字未动）"
+  fi
+
+  step "验收 2/4　sing-box check"
+  local chk; chk=$(mktmp)
+  if "$BIN" check -c "$new" >"$chk" 2>&1; then
+    ok "新配置通过 check"
+  else
+    sed 's/^/      /' "$chk" >&2
+    die "新配置没通过 check，拒绝落地（${cfg} 一字未动）"
+  fi
+
+  step "验收 3/4　沙箱起得来"
+  local passed=4
+  if _sb_udp_alive; then
+    local port wd sbcfg
+    port=$(_sb_free_port 10900)
+    [ -n "$port" ] || die "10900 起的 200 个端口全被占用，找不到可用的沙箱端口"
+    wd=$(mktmpd)
+    sbcfg="$wd/config.json"
+    _sb_derive_config "$new" "$sbcfg" "$port" "$wd" || die "派生沙箱配置失败"
+    json_valid "$sbcfg" || die "派生出来的沙箱配置不是合法 JSON"
+    _sb_probe_socks "$BIN" "$sbcfg" "$port" "$wd" \
+      || die "沙箱验收未过，拒绝落地（${cfg} 一字未动）"
+  else
+    # 沙箱的 cache.db 是空的，remote 规则集要现下一遍——没网这一道跑不了。
+    # 这条规则下第 3 道的边际价值本来就最低：它唯一独占的错是 tag 引用写错，
+    # 而内联 http_client 没有 tag 引用，从源头就免疫了。
+    passed=3
+    warn "网络不通，第 3 道（沙箱）跳过：本次只过了 3/4 道（1、2、4）"
+  fi
+
+  step "验收 4/4　重跑发现层归零"
+  # 在**新配置**上跑，落地之前。这才是闸门——漏改不产生 diff、check 沉默、
+  # 沙箱照样起得来，前三道全漏，只有这一道抓得住。
+  local left rows4; rows4=$(mktmp)
+  # 审不了就不能落地：这一道是漏改的唯一防线，跳过它等于四道只剩三道，
+  # 而漏改恰恰是另外三道全挡不住的那一型。
+  _cfg_audit "$new" >"$rows4" \
+    || die "第 4 道没做成（审不了改写结果），拒绝落地（${cfg} 一字未动）"
+  left=$(grep -c 'download_detour' "$rows4" 2>/dev/null || true)
+  left=$(printf '%s' "${left:-0}" | tr -d ' ')
+  if [ "${left:-0}" != 0 ]; then
+    die "改写后仍有 ${left} 处 download_detour，拒绝落地（${cfg} 一字未动）"
+  fi
+  ok "新配置里 download_detour 已归零"
+
+  #--- 落地 -------------------------------------------------------------
+  # 四道都过了才走到这里。-n 在这一步收手：前面那四道是只读的，干跑照样走完，
+  # 所以 `-n config audit --apply` 是一次完整的预演 —— 它把「会改成什么、四道过不过」
+  # 全都说清楚了，只是不写盘。
+  if [ "$DRY" = 1 ]; then
+    dim "[dry-run] 备份现有配置、清理到最近 10 份、写入 ${cfg} 并重启服务"
+    info "四道验收已跑完（${passed}/4 道），但没有改动 ${cfg}（-n）"
+    return 0
+  fi
+
+  # 默认 y：--apply 这个 flag 本身就是意图表达，而 ask 在 -y / 非交互下取的是
+  # **默认值**（不是「一律同意」）——默认写 n 的话，自动化场景就永远落不了地。
+  # 留这一问是为了让交互的人看完四道验收的结果再拍板。
+  ask "把上面的改写落到 ${cfg}？" y || { info "未改动 ${cfg}"; return 0; }
+
+  need_root
+  backup_config >/dev/null || die "备份失败，未改动 ${cfg}"
+  prune_backups 10
+  sudo cp "$new" "$cfg" || die "写入失败，${cfg} 可能处于中间态——用 config restore 回退"
+  sudo chown root:wheel "$cfg"; sudo chmod 644 "$cfg"
+  if [ "$passed" = 4 ]; then
+    ok "已落地（四道验收全过）"
+  else
+    ok "已落地（3/4 道，沙箱未验）"
+  fi
+  info "回退：$(basename "$0") config restore"
+  # 不重启的话内核还在跑旧配置：文件改了，而 err 日志里的 deprecated 告警照样在涨，
+  # 「改完了」和「生效了」是两回事。cmd_config restore 也是这么收尾的。
+  cmd_restart
+  return 0
+}
+
+# 把 _cfg_audit 的 TAB 行渲染成人话，并按 tier 定退出码：
+#   0 干净 / 2 有废弃项但内核仍接受 / 1 内核会拒
+# 与 cmd_verify 的两档约定同构 —— 1 是「现在就坏」，2 是「将来会坏」。
+_cfg_audit_report() {
+  local cfg="$1"
+  local rows; rows=$(mktmp)
+
+  printf '配置审查：%s\n' "$cfg"
+  local kver
+  kver=$("$BIN" version 2>/dev/null | head -1 | awk '{print $3}')
+  [ -n "$kver" ] || die "内核不可用（${BIN} 问不出版本号），审查无法进行"
+  info "内核 ${kver}"
+  # 这里是用户直接问的，「审不了」必须说出来 —— 不能拿一个没做成的检查
+  # 去打印「没有废弃项」。
+  _cfg_audit "$cfg" >"$rows" \
+    || die "审查没做成（读不到 ${cfg}，或内核跑不起来）—— 这不代表配置没问题"
+
+  local n_removed=0 n_deprecated=0
+  local tier source path desc url
+  while IFS="$(printf '\t')" read -r tier source path desc url; do
+    [ -n "$tier" ] || continue
+    case "$tier" in
+      removed)    n_removed=$((n_removed + 1)) ;;
+      deprecated) n_deprecated=$((n_deprecated + 1)) ;;
+    esac
+    printf '  [%s/%s] %s\n' "$tier" "$source" "$path"
+    printf '      %s\n' "$desc"
+    [ -n "$url" ] && printf '      迁移：%s\n' "$url"
+  done <"$rows"
+
+  if [ "$n_removed" -gt 0 ]; then
+    bad "${n_removed} 项已被本版本内核移除，配置起不来"
+    return 1
+  fi
+  if [ "$n_deprecated" -gt 0 ]; then
+    warn "${n_deprecated} 项已废弃：现在能跑，将来会坏"
+    return 2
+  fi
+  ok "没有废弃项，也没有未知键"
+  return 0
 }
 
 cmd_config() {
@@ -2029,7 +2538,39 @@ cmd_config() {
       sudo cp "$b" "$CFG" || die "恢复失败，$CFG 未改动"
       sudo chown root:wheel "$CFG"; sudo chmod 644 "$CFG"
       ok "已恢复"; cmd_restart ;;
-    *) die "config: 未知子命令 $1（show|backup|list|diff|restore）" ;;
+    audit)
+      shift
+      # 参数解析。⚠️ 每个 shift 2 之前都要确认 $2 存在：shift 2 在参数不够时
+      # 返回 1 且**不消耗任何参数**，这个 while 会原地死转。
+      local a_cfg="" a_deep=0 a_apply=0
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --config) [ -n "${2:-}" ] || die "--config 需要参数，如 --config ./config.json"
+                    a_cfg="$2"; shift 2 ;;
+          --apply)  a_apply=1; shift ;;
+          --deep)   a_deep=1; shift ;;
+          *) die "config audit: 未知参数 $1（--config <path> | --apply | --deep）" ;;
+        esac
+      done
+      [ "$a_deep" = 0 ] || die "--deep（/rules 语义 diff）尚未实现"
+      # 互斥：--apply 的回退点是 backup_config，那套只认 $CFG。允许 --apply --config
+      # 就等于要么新造一套备份机制，要么让改写落在一个没有回退点的文件上。
+      if [ "$a_apply" = 1 ] && [ -n "$a_cfg" ]; then
+        die "--apply 只作用于 ${CFG}，不能与 --config 同用（--config 是只读审查专用）"
+      fi
+      if [ "$a_apply" = 1 ]; then
+        [ -f "$CFG" ] || die "找不到配置：$CFG"
+        _cfg_audit_report "$CFG" || true
+        _cfg_apply
+        return $?
+      fi
+      # --config 指向任意文件，这正是它存在的理由：审查不需要 live 配置、不需要
+      # root，测试才能全离线。不给就审 $CFG（644，普通用户读得到）。
+      [ -n "$a_cfg" ] || a_cfg="$CFG"
+      [ -f "$a_cfg" ] || die "找不到配置：$a_cfg"
+      _cfg_audit_report "$a_cfg"
+      return $? ;;
+    *) die "config: 未知子命令 $1（show|backup|list|diff|restore|audit）" ;;
   esac
 }
 
@@ -2267,7 +2808,7 @@ _logs_truncate() {
 #            domain_strategy，这类升级不该被 -y 一路放过
 #   1 沙箱   装到临时前缀，用新内核跑一份派生配置实测建链。现网服务毫发无损
 #   2 升级   此时才动 $BIN。起不来就回滚
-#   3 验收   cmd_verify 五步，失败重试一轮再判回滚
+#   3 验收   cmd_verify 六步，失败重试一轮再判回滚
 #
 # 上游 release 的资产列表里没有 checksum 文件（没有 checksums.txt / .sha256 /
 # SHA256SUMS），所以完整性只能降级验到「解压出来能跑、且自报架构与本机一致」。
@@ -2408,13 +2949,17 @@ _sb_health() {
   [ "$n" = 0 ]
 }
 
-# 废弃字段照打照记，但一个字都不自动改——改写配置需要读 release notes 与
-# 上游文档，验收标准和「安全升级」完全不是一回事。
-_sb_warn_deprecated() {
-  grep -qi deprecated "$1" || return 0
-  warn "存在废弃字段告警（本脚本不会自动改写配置）："
-  grep -i deprecated "$1" | sed 's/^/        /' >&2
-}
+# 废弃字段的检查已收敛到 _cfg_audit（见 config audit 那一节）。原先这里是一个
+# 只 grep check 输出的 _sb_warn_deprecated，连同 install / edit / doctor 三处同构
+# 的写法一起，构成一个闭合的盲区：**告警只在 run 时出现，而脚本只在 check 时找
+# 告警。**
+#
+# 上一版的立场是「照打照记，但一个字都不自动改——改写配置需要读 release notes
+# 与上游文档，验收标准和『安全升级』完全不是一回事」。本次推翻它，换成：
+# 发现层自动跑（只读、毫秒级、不要 root），改写只在 config audit --apply 且只走
+# 白名单内的**一条**规则，并以四道机械验收替代「读 release notes」这个人工前提。
+# 「读文档」之所以撑不住，是因为它没有失败模式——没读、读错、读了没改，
+# 三种情况长得一模一样。
 
 # 阶段 3 的验收。读 cmd_verify 的退出码，不是读布尔值——两者的差别就是这次升级
 # 要不要被回滚：
@@ -2542,7 +3087,7 @@ cmd_update() {
     sed 's/^/      /' "$chk" >&2
     die "阶段 1 失败，现网未被触碰（\$BIN 仍是 ${cur}）"
   fi
-  _sb_warn_deprecated "$chk"
+  _cfg_audit_notice "$CFG"
 
   # check -c 只看语法与字段合法性：字段还在、语义变了它照样过。所以还要实跑一次。
   port=$(_sb_free_port 10900)
@@ -2589,6 +3134,11 @@ cmd_update() {
     _sb_rollback_to_prev "$cur"
     return 1
   fi
+
+  # 内核版本变了，废弃面和 schema 跟着变 —— 这是最该重查一次配置现代性的时刻，
+  # 也正是「21 条 download_detour 悄悄变成历史」这件事的成因。只报不改，且**不**
+  # 影响 update 的退出码与回滚判定：配置将来会坏，不等于这次升级失败了。
+  _cfg_audit_notice "$CFG"
 
   ok "升级完成：${cur} → ${new}"
   info "旧版本保留在 ${BIN}.prev，下一次 update 才会覆盖它"
@@ -2785,7 +3335,12 @@ cmd_doctor() {
   grep -qi "failed to download rule.set" "$out" && _hit "规则集下载失败：跑 $(basename "$0") rules"
   grep -q "198\.18\." "$out" && _hit "出现 FakeIP 地址：跑的可能不是这份配置，或嗅探链路断了"
   grep -q "157\.240\." "$out" && _hit "DNS 疑似被投毒：跑 $(basename "$0") syscheck"
+  # 这一条**保留**：$out 里含 tail $ERRFILE，也就是内核的运行日志 —— 那是
+  # download_detour 这类告警唯一真正出现的地方（check 对它沉默）。四处 grep 里
+  # 只有这一处不在盲区里，删掉它等于把唯一的运行时视角也丢了。
   grep -qi "deprecated" "$out" && { warn "存在废弃字段（不阻止启动，但可能静默降级）"; DOCTOR_FOUND=1; }
+  # 再加配置视角：运行日志只有跑起来才有，而配置摆在那儿随时可读。
+  _cfg_audit_notice "$CFG"
   netstat -rn -f inet 2>/dev/null | grep -E 'default|^0/1' | grep -q utun || _hit "路由未指向 utun：TUN 未接管"
   [ -f "$PLIST" ] && { plutil -lint "$PLIST" >/dev/null 2>&1 || _hit "plist 语法错误：删掉后重新 install"; }
   grep -q "IPv6=On" "$out" && { warn "有网络服务的 IPv6 未关：跑 $(basename "$0") sysprep"; DOCTOR_FOUND=1; }
@@ -2916,6 +3471,7 @@ singbox.sh v$VERSION —— sing-box on macOS 全生命周期管理
                       --editor 会被记住，后续 edit 自动使用
                       --once 只用一次不保存；--show-editor 查看；--reset-editor 清除
   config <sub>        show | backup | list | diff [备份] | restore [备份]
+                      audit [--config <path>] [--apply]  配置的废弃与合法性审查
 
 运行
   status              服务状态、TUN 路由、监听端口

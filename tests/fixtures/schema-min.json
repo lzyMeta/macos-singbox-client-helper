@@ -1,0 +1,319 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sing-box.sagernet.org/schema.json",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "examples": [
+        "https://sing-box.sagernet.org/schema.json"
+      ]
+    },
+    "log": {},
+    "dns": {},
+    "ntp": {},
+    "certificate": {},
+    "certificate_providers": {},
+    "http_clients": {},
+    "network_namespaces": {},
+    "endpoints": {},
+    "inbounds": {},
+    "outbounds": {},
+    "route": {
+      "$ref": "#/$defs/RouteOptions"
+    },
+    "services": {},
+    "experimental": {
+      "$ref": "#/$defs/ExperimentalOptions"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "RouteOptions": {
+      "type": "object",
+      "properties": {
+        "rules": {
+          "type": "array",
+          "items": {}
+        },
+        "rule_set": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RuleSet"
+          }
+        },
+        "final": {
+          "type": "string",
+          "x-tag-reference": "outbound"
+        },
+        "find_process": {
+          "type": "boolean"
+        },
+        "find_neighbor": {
+          "type": "boolean"
+        },
+        "dhcp_lease_files": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        },
+        "auto_detect_interface": {
+          "type": "boolean"
+        },
+        "override_android_vpn": {
+          "type": "boolean"
+        },
+        "default_interface": {
+          "type": "string"
+        },
+        "default_mark": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            {
+              "type": "string"
+            }
+          ]
+        },
+        "default_domain_resolver": {
+          "$ref": "#/$defs/DomainResolver"
+        },
+        "default_network_strategy": {
+          "type": "string",
+          "enum": [
+            "default",
+            "fallback",
+            "hybrid"
+          ]
+        },
+        "default_network_type": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InterfaceType"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/InterfaceType"
+              }
+            }
+          ]
+        },
+        "default_fallback_network_type": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InterfaceType"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/InterfaceType"
+              }
+            }
+          ]
+        },
+        "default_fallback_delay": {
+          "$ref": "#/$defs/Duration"
+        },
+        "default_http_client": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RuleSet": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "inline",
+                ""
+              ]
+            },
+            "tag": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            "rules": {
+              "type": "array",
+              "items": {}
+            }
+          },
+          "required": [
+            "tag"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "local"
+            },
+            "tag": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            "format": {
+              "type": "string",
+              "enum": [
+                "source",
+                "binary"
+              ]
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "tag"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "remote"
+            },
+            "tag": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
+            "format": {
+              "type": "string",
+              "enum": [
+                "source",
+                "binary"
+              ]
+            },
+            "url": {
+              "type": "string"
+            },
+            "initial_path": {
+              "type": "string"
+            },
+            "http_client": {
+              "$ref": "#/$defs/HTTPClientReference"
+            },
+            "update_interval": {
+              "$ref": "#/$defs/Duration"
+            }
+          },
+          "required": [
+            "type",
+            "tag"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "HTTPClientReference": {
+      "anyOf": [
+        {
+          "type": "string",
+          "x-tag-reference": "http_client"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "engine": {
+              "type": "string",
+              "enum": [
+                "go",
+                "apple"
+              ]
+            },
+            "headers": {},
+            "tls": {},
+            "detour": {
+              "type": "string",
+              "x-tag-reference": "outbound"
+            },
+            "connect_timeout": {
+              "$ref": "#/$defs/Duration"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Duration": {
+      "type": "string",
+      "pattern": "^[-+]?(((\\d+(\\.\\d*)?|\\.\\d+)(ns|us|µs|μs|ms|s|m|h|d))+|0)$"
+    },
+    "ExperimentalOptions": {
+      "type": "object",
+      "properties": {
+        "cache_file": {},
+        "clash_api": {
+          "$ref": "#/$defs/ClashAPIOptions"
+        },
+        "v2ray_api": {},
+        "debug": {}
+      },
+      "additionalProperties": false
+    },
+    "ClashAPIOptions": {
+      "type": "object",
+      "properties": {
+        "external_controller": {
+          "type": "string"
+        },
+        "external_ui": {
+          "type": "string"
+        },
+        "external_ui_download_url": {
+          "type": "string"
+        },
+        "external_ui_download_detour": {
+          "type": "string",
+          "x-tag-reference": "outbound"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

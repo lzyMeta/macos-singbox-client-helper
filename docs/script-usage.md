@@ -126,6 +126,7 @@ singbox <命令> [参数]
 | | `doctor` | 收集诊断并自动判读 |
 | 配置 | `edit [--editor <cmd>]` | 改配置（校验 + 备份 + 重启），编辑器可记忆 |
 | | `config show\|backup\|list\|diff\|restore` | 配置与备份管理 |
+| | `config audit [--config <path>] [--apply]` | 废弃字段与合法性审查，`--apply` 一键迁移 |
 | 维护 | `update` | 升级内核：预检 → 沙箱验证 → 升级 → 验收，任一阶段失败自动回滚 |
 | | `rollback` | 换回上一个内核（`.prev`）并重新验收 |
 | | `dns` | 系统 DNS 的查看与切换 |
@@ -303,7 +304,7 @@ macOS 的 `newsyslog` 只会 rename + 新建，没有原地截断的选项
 
 ### `verify` — 完整验证
 
-五步，按依赖顺序，前一步失败后面就没意义：
+六步，前五步按依赖顺序，前一步失败后面就没意义；第 6 步独立：
 
 | 步 | 验什么 | 失败意味着 |
 |---|---|---|
@@ -312,6 +313,7 @@ macOS 的 `newsyslog` 只会 rename + 新建，没有原地截断的选项
 | 3 | DNS 是否被投毒 | 系统 DNS 可能是内网地址 |
 | 4 | IPv6 / QUIC | 见 `syscheck` |
 | 5 | 国内直连、局域网 | 规则顺序或规则集问题 |
+| 6 | 配置现代性（`config audit` 的发现层） | 配置里有废弃字段：**现在能跑，将来会坏**。挂策略档 |
 
 **退出码分两档**，判据是「回滚到旧内核能不能把它换回来」：
 
@@ -319,11 +321,11 @@ macOS 的 `newsyslog` 只会 rename + 新建，没有原地截断的选项
 |---|---|---|
 | `0` | 全过 | — |
 | `1` | **链路档**失败，换内核有可能修好 | SOCKS 不通；兜底取不到 IP；两个出口相同；存在全局 IPv6 |
-| `2` | **策略档**失败，回滚换不回来 | DNS 疑似污染或解析手段全废；QUIC 未被阻断；国内出口等于 SOCKS 出口；取不到默认网关或网关不通；`ipinfo.io` / `cip.cc` 那几个参照站全取不到 |
+| `2` | **策略档**失败，回滚换不回来 | DNS 疑似污染或解析手段全废；QUIC 未被阻断；国内出口等于 SOCKS 出口；取不到默认网关或网关不通；`ipinfo.io` / `cip.cc` 那几个参照站全取不到；配置里有废弃字段 |
 
 `update` 的阶段 3 只认 `1` 才回滚，`2` 打条 `warn` 放行——路由策略坏了，换回旧内核一个字都改不了。
 
-**五步里没有任何静默跳过。** 每一步都会打印判定结果：`dig` 不可用会自动降级到
+**六步里没有任何静默跳过。** 每一步都会打印判定结果：`dig` 不可用会自动降级到
 `host` → `dscacheutil` → `python3`，四级全废才报「本机没有可用解析手段」（这与「疑似污染」
 是分开的两条错，别搞混）；QUIC 不再依赖 `curl --http3`（本机那个 curl 压根没编 HTTP/3），
 改为直接发一个 QUIC 版本协商包看对端回不回；第 5 步也不再只是打印，它现在会断言
@@ -434,6 +436,102 @@ singbox config restore <备份路径>
 
 ---
 
+### `config audit` — 废弃字段与合法性审查
+
+```bash
+singbox config audit                          # 审 $CFG，只读
+singbox config audit --config ./some.json     # 审任意文件，不要 root
+singbox config audit --apply                  # 迁移 download_detour → http_client
+```
+
+退出码分三档，与 `verify` 的两档同构：
+
+| 码 | 含义 |
+|---|---|
+| 0 | 没有废弃项、没有未知键 |
+| 2 | 有废弃项但内核仍接受 —— 配置现在能跑，**将来**会坏 |
+| 1 | 内核会拒 —— 配置已经起不来，或升级后必起不来 |
+
+#### 为什么要两路合流
+
+发现层同时问两个来源，因为它们的盲区恰好互补：
+
+| 来源 | 抓什么 |
+|---|---|
+| `sing-box check -c <cfg>` | 废弃但仍接受的字段（WARN，**自带官方 migration 锚点 URL**）；已被移除的字段（FATAL，退 1） |
+| `sing-box schema` 结构比对 | schema 里不存在的键。sing-box 的 schema 生成器**剔除了全部废弃字段**，所以「未知键」≈ 废弃 ∪ 已移除 ∪ 拼错 |
+
+这不是冗余。实测 sing-box 1.14.0：
+
+```
+$ sing-box check -c /usr/local/etc/sing-box/config.json
+$ echo $?
+0
+```
+
+而同一份配置里 21 条 `route.rule_set[]` 全带着 `download_detour`，内核每次启动都在
+`/var/log/sing-box.err` 里写 `WARN legacy download_detour ... will be removed in sing-box 1.16.0`。
+**告警只在 `run` 时出现，而 `check` 对它一个字都不打。** 这条由 schema 档抓到；反过来，
+schema 档看不见 `inbounds` 内部被移除的字段那类问题，由 check 档定性。
+
+> ⚠️ 找废弃键**不能靠子串计数**。真内核 schema 里 `download_detour` 的子串命中数是 1，
+> 那一处是 `experimental.clash_api.external_ui_download_detour` —— 一个 1.14.0 **仍然有效**
+> 的字段。所以 schema 档走的是结构化键路径比对：按 `type` 的 `const` 选定 `oneOf` 分支，
+> 再对该分支的 `properties` 求键差。报告因此能点名到 `route.rule_set[0].download_detour`，
+> 而不是含混的「`rule_set[0]` 不匹配任何分支」。
+
+内核低于 1.14.0 时 schema 档自动关闭（那些版本的 schema 是否同样剔除废弃字段没有实测过），
+只用 check 档；`--apply` 在低于 1.14.0 时直接拒绝——`http_client` 那时还不存在。
+
+#### `--apply` 的四道验收
+
+改写只有**一条**规则，逐字搬移值：
+
+```json
+// 前
+{"type":"remote","tag":"geosite-cn","url":"...","download_detour":"vpstrans","update_interval":"7d"}
+// 后
+{"type":"remote","tag":"geosite-cn","url":"...","update_interval":"7d","http_client":{"detour":"vpstrans"}}
+```
+
+用**内联 `http_client` 对象**，不引顶层 `http_clients[]`、不设 `route.default_http_client`。
+理由同样是实测出来的：`check` 放过 tag 引用错误（`http_client: "rs_dl"` 而顶层 tag 实为
+`rs-dl`，`check` 退 0），只有真跑起来才 FATAL。内联写法没有 tag 引用，从源头免疫这一类错误。
+
+四道验收，缺一不可 —— 每一道挡的是**不同**的错：
+
+| 改写可能出的错 | 哪道挡住 |
+|---|---|
+| ① 漏改：21 条只改了 20 条 | **④ 重跑发现层归零**。前三道全漏：漏改不产生 diff，`check` 沉默，沙箱照样起得来 |
+| ② 值搬错：`http_client:{}` 丢了 `detour` | **① 白名单 diff**，它精确到值：新 `http_client.detour` 必须逐字等于旧 `download_detour` |
+| ③ 顺手弄坏别的（重排时误删 `update_interval`） | **① 白名单 diff** |
+| ④ tag 引用写错 | **③ 沙箱起得来**（`check` 实测放过）；内联写法已从源头免疫 |
+| ⑤ 跨段污染：手滑改了某条 `route.rules` 的 `outbound` | **① 白名单 diff** |
+| ⑥ 全局默认副作用（`route.default_http_client`） | 四道全挡不住 → **靠范围排除**：这类改动只报不改 |
+
+第 1 道是**结构** diff 不是文本 diff：改写会把 `http_client` 放到键序末尾，文本 diff 会把
+这个无语义的位移报成改动。
+
+第 3 道依赖网络（沙箱的 `cache.db` 是空的，`type: remote` 规则集要现下一遍）。网络不通时
+**降级为 3/4 道并在输出里明说**，不静默跳过。这条规则下第 3 道的边际价值本来最低——
+它唯一独占的错是 tag 引用写错，而内联写法没有 tag 引用。
+
+回退点走现成机制：`backup_config` + `prune_backups 10`，回退用 `config restore` / `config diff`，
+不新增第二套备份。因此 `--apply` **只作用于 `$CFG`**，不能与 `--config` 同用。
+
+#### 挂在哪些流程上
+
+发现层只读、毫秒级、不要 root、不碰网络，所以挂进现成流程几乎免费：
+
+| 挂载点 | 行为 |
+|---|---|
+| `install` 阶段 5、`edit` 校验后 | 报出废弃项，不阻止安装/保存 |
+| `update` 阶段 3 之后 | 只报不改，**不影响 update 的退出码与回滚判定**。内核版本变了废弃面就变，这是最该重查的时刻 |
+| `verify` 第 6 步 | 挂**策略档**（退 2）。废弃字段不会让链路断，回滚内核也换不回来 —— 是「将来会坏」不是「现在就坏」 |
+| `doctor` 自动判读 | 在原有的运行日志 `grep deprecated` **之外**再加一次配置视角。日志那条保留：它是唯一能看见内核运行时告警的地方 |
+
+`--deep`（拿 `GET /rules` 做路由语义 diff）是保留位，目前明确报「尚未实现」并以非 0 退出。
+
 ## 8. 维护
 
 ### `update` — 升级脚本与内核
@@ -446,7 +544,7 @@ singbox config restore <备份路径>
 | 0 预检 | 取当前版本与目标版本。跨 minor 额外确认一次 | 什么都没下载，直接退出 |
 | 1 沙箱 | 把新内核装到**临时前缀**，验架构 → `check -c` 当前真实配置 → 用一份**派生配置**实跑，`curl -x socks5h://` 实测建链 | `$BIN` 一个字节都没被动过，现网服务全程在跑 |
 | 2 升级 | `$BIN` → `$BIN.prev`，装新内核，`check -c`，重启，确认进程存活 / TUN 路由在 / 端口在听 | 换回 `.prev` 并重启 |
-| 3 验收 | 跑 `verify` 五步。链路档失败隔 5s 重试一轮 | 链路档两轮都不过才回滚；策略档（退出 2）打 `warn` 放行 |
+| 3 验收 | 跑 `verify` 六步。链路档失败隔 5s 重试一轮 | 链路档两轮都不过才回滚；策略档（退出 2）打 `warn` 放行 |
 
 **为什么脚本排在内核前面。** 升级逻辑本身出过的问题比内核多（Rosetta 下装错架构、
 日志涨到失控、一次全命令审计修了 5 处）。先换脚本，内核升级用的就永远是最新的升级逻辑。

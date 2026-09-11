@@ -390,6 +390,34 @@ else
   ng "rollback 启动器无 .prev：期望内核退回、启动器不变、日志说明（内核=$(bin_version "$(BIN)")）"
 fi
 
+#-- 21. 阶段 3 之后的配置审查：只报，不影响退出码与回滚判定 ----------------
+# 内核版本一变，废弃面和 schema 跟着变 —— 这是最该重查配置的时刻。但它只报不改，
+# 也不参与成败判定：配置「将来会坏」不等于这次升级失败了，判错就是白白回滚一次
+# 好端端的升级。
+setup
+# 用 store_rdrc（check 档抓得到）而不是 download_detour：后者只有 schema 档看得见，
+# 而 schema 档在 < 1.14.0 的内核上被版本闸门关掉，这条用例升的是 1.13.19。
+python3 - "$ROOT/prefix/etc/sing-box/config.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+d.setdefault("experimental", {})["cache_file"] = {
+    "enabled": True, "store_rdrc": True,
+    "path": "/usr/local/etc/sing-box/cache.db"}
+json.dump(d, open(p, "w"), ensure_ascii=False, indent=2)
+PY
+sb update
+if [ "$CODE" = 0 ] && [ "$(bin_version "$(BIN)")" = "$NEW" ]; then
+  ok "配置有废弃项：update 照样退 0，新内核在位（没被误判成失败）"
+else
+  ng "配置有废弃项：期望 0/${NEW}，实际 ${CODE}/$(bin_version "$(BIN)")"
+fi
+if grep -q '废弃/未知字段' "$LOG"; then
+  ok "阶段 3 之后跑了配置审查并报出废弃项"
+else
+  ng "阶段 3 之后没跑配置审查 —— 挂载点没生效"
+fi
+
 echo
 printf '通过 %d，失败 %d\n' "$pass" "$fail"
 [ "$fail" = 0 ]

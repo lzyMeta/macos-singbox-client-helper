@@ -13,6 +13,15 @@
 #   SB_FAKE_RUN_FAIL=<版本>                        run 起不来（沙箱实跑）
 #   SB_FAKE_DEPRECATED=<版本>                      check 输出里带废弃字段告警
 #   SB_FAKE_ARCH=<amd64|arm64>                     version 里报告的架构
+#   SB_FAKE_SCHEMA=<路径>                          schema 子命令吐哪份 JSON
+#   SB_FAKE_CHECK_NOISE=1                          check 退 1，但输出**不是内核诊断**
+#                                                  （模拟 sudo 要密码、wrapper 脚本、
+#                                                  SIP 拦截这类「审查本身没做成」）
+#
+# SB_FAKE_SCHEMA 不是「绕过 PATH 桩」那类后门（见 singbox.sh:1521 / 1563 的两条注释，
+# 那说的是内联 python3 自己去联网，桩拦不住）。schema 是被 "$BIN" 调起来的外部命令，
+# 桩完全拦得住；这个变量只是给桩**指路**——模板被 sed 复制到临时目录后，
+# $0 已经不在仓库里，读不到 tests/fixtures/ 的相对路径。
 #
 SB_SELF_VERSION="__VERSION__"
 
@@ -42,6 +51,39 @@ case "${1:-}" in
       echo "FATAL[0000] decode config at ${3:-?}: unknown field domain_strategy" >&2
       exit 1
     fi
+    # 按配置内容判，跟真内核同一个口径。三种反应各自对应发现层的一档：
+    #   已移除字段  → FATAL 退 1        （check 档，tier=removed）
+    #   废弃仍接受  → WARN + migration  （check 档，tier=deprecated）
+    #   download_detour → **一个字都不打**
+    # 最后那条是本功能的成因，桩必须还原这份沉默：桩要是对它出声，
+    # 「schema 档补上 check 档盲区」这条断言就永远是假绿——它会从 check 档走掉。
+    # 「审查没做成」与「内核拒绝配置」必须能分开测。这一档退非 0 但一个字都不像
+    # 内核诊断 —— 调用方若把它当成发现，就会把「审不了」报成「配置已经坏了」。
+    [ "${SB_FAKE_CHECK_NOISE:-}" = 1 ] && {
+      echo "sudo: a terminal is required to read the password" >&2; exit 1; }
+    _cfg=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -c) [ -n "${2:-}" ] || { echo "fake sing-box: -c 需要参数" >&2; exit 2; }
+            _cfg="$2"; shift 2 ;;
+        *)  shift ;;
+      esac
+    done
+    if [ -n "$_cfg" ] && [ -f "$_cfg" ]; then
+      if grep -q '"inet4_address"' "$_cfg"; then
+        echo "FATAL[0000] decode config at ${_cfg}: unknown field inet4_address" >&2
+        exit 1
+      fi
+      for _dep in store_rdrc independent_cache; do
+        grep -q "\"${_dep}\"" "$_cfg" && echo "WARN[0000] legacy ${_dep} option is deprecated in sing-box 1.14.0 and will be removed in sing-box 1.16.0, checkout documentation for migration: https://sing-box.sagernet.org/migration/#${_dep}"
+      done
+    fi
+    exit 0
+    ;;
+  schema)
+    [ -n "${SB_FAKE_SCHEMA:-}" ] && [ -f "$SB_FAKE_SCHEMA" ] || {
+      echo "fake sing-box: schema 需要 SB_FAKE_SCHEMA 指向一份 JSON" >&2; exit 2; }
+    cat "$SB_FAKE_SCHEMA"
     exit 0
     ;;
   run)

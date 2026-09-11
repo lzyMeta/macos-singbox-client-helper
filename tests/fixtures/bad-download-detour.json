@@ -1,0 +1,50 @@
+{
+  "log": { "level": "info" },
+  "inbounds": [
+    { "type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": 21808 }
+  ],
+  "outbounds": [
+    { "type": "direct", "tag": "direct" },
+    { "type": "socks", "tag": "vpstrans", "server": "127.0.0.1", "server_port": 1080 }
+  ],
+  "route": {
+    "final": "direct",
+    "rules": [
+      { "rule_set": "geosite-cn", "outbound": "direct" },
+      { "rule_set": "geoip-cn", "outbound": "direct" }
+    ],
+    "rule_set": [
+      {
+        "type": "remote",
+        "tag": "geosite-cn",
+        "format": "binary",
+        "url": "https://example.invalid/geosite-cn.srs",
+        "download_detour": "vpstrans",
+        "update_interval": "7d"
+      },
+      {
+        "type": "remote",
+        "tag": "geoip-cn",
+        "format": "binary",
+        "url": "https://example.invalid/geoip-cn.srs",
+        "download_detour": "vpstrans",
+        "update_interval": "3d"
+      },
+      {
+        "type": "local",
+        "tag": "local-block",
+        "format": "source",
+        "path": "/etc/sing-box/block.json"
+      }
+    ]
+  },
+  "experimental": {
+    "cache_file": { "enabled": true, "path": "cache.db" },
+    "clash_api": {
+      "external_controller": "127.0.0.1:9090",
+      "external_ui": "ui",
+      "external_ui_download_url": "https://example.invalid/ui.zip",
+      "external_ui_download_detour": "vpstrans"
+    }
+  }
+}

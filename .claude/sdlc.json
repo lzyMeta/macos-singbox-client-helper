@@ -14,7 +14,7 @@
       "libraries": {
         "sing-box": {
           "id": "/sagernet/sing-box",
-          "version": "1.13.14",
+          "version": "1.14.0",
           "commit": false
         }
       },
