@@ -9,7 +9,7 @@
       },
       {
         "name": "doc",
-        "command": "PATH=\"$HOME/.claude/sdlc-kit-live/bin:$PATH\" sdlc-doc lint"
+        "command": "sdlc-doc lint"
       }
     ]
   },
