@@ -9,10 +9,15 @@
 ./singbox-selfcheck.sh && ./tests/run.sh
 ```
 
-前半段是 `singbox.sh` 的静态自检（13 项），后半段是 `tests/` 下的八个测试文件：
+前半段是 `singbox.sh` 的静态自检（13 项），后半段是 `tests/` 下的九个测试文件：
 `cli`（参数解析）、`selfcheck`（自检项本身）、`install`（装 `singbox` 命令）、
 `selfupdate`（`update` 阶段 S 的脚本自更新）、`update`（内核升级状态机与 `rollback`）、
-`logs`（日志体积与截断）、`platform`（架构判定）、`verify`（两档退出码）。
+`logs`（日志体积与截断）、`platform`（架构判定）、`verify`（两档退出码）、
+`config-audit`（四路发现层、迁移表、`--apply` 三条规则与四道验收）。
+
+`tests/run.sh` 给每个测试文件一把独立的锁（`SB_LOCKDIR`，`mktemp -d` 下）；`singbox.sh` 的
+`LOCKDIR` 默认 `/tmp/.singbox-sh.lock`，只在测试里用这个变量改。以前测试与 live 的 `singbox`
+命令共用一把锁，teardown 还会顺手删掉 live 的锁——那是连跑偶发红的嫌疑来源。
 
 `selfcheck.test.sh` 验证那 13 项**真的在检查**。两种坏法都踩过，且都不会自己暴露：
 

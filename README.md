@@ -172,8 +172,11 @@ $EDITOR config.json
   里不存在的键。非要两路，是因为它们各有盲区——实测 1.14.0 的 `check` 对
   `route.rule_set[].download_detour` **一个字都不打**（退 0、无输出），而内核每次 `run`
   都在往 err 日志里写 deprecated 告警。退出码 `0` 干净、`2` 有废弃项但现在还能跑、
-  `1` 内核已经不接受。`--apply` 会把 `download_detour` 改写成内联 `http_client`，
-  但必须先过四道验收（白名单结构 diff → `check` → 沙箱起得来 → 重跑发现层归零）。
+  `1` 内核已经不接受。加上内置的**迁移表**（第三路，能表达「键合法但用法废弃」，如没开
+  `match_response` 的 `ip_cidr`），`--deep` 再起一次沙箱收割内核 `run` 时的 WARN（第四路，
+  要网络）。`--apply` 有三条改写规则（`download_detour` → 内联 `http_client`、删
+  `independent_cache`、`store_rdrc` → `store_dns`），必须先过四道验收（白名单结构 diff →
+  `check` → 沙箱起得来 → 重跑发现层归零）。
 
 - **`syscheck`** 最容易忘、也最该记住。IPv6 与 DNS 设置**按网络服务生效、不会继承**——插网卡、连手机热点、公司 VPN 退出没还原 DNS，都会留下缺口，而代理看起来一切正常。
 - **`doctor`** 出问题先跑它，自动判读十类常见故障并输出诊断文件（写在 0700 的临时目录里 —— 里面有你访问过的域名与日志，贴出来之前先看一眼）。

@@ -314,4 +314,46 @@ for i in 1 2 3 4 5; do ./tests/run.sh >/dev/null 2>&1 || echo "第 $i 次红"; d
 
 ## 实现计划
 
-（留空，由 build 追加）
+由 build 于 2026-09-10 追加。基线 `876ccad`，按 5 个可独立验证的单元顺序落地，每单元先写断言看红、
+再实现看绿、`sdlc-check`（`./singbox-selfcheck.sh && ./tests/run.sh`）退 0 后提交一次：
+
+| 单元 | 提交 | 内容 | 证据 |
+|---|---|---|---|
+| U0 锁隔离 | `fd32969` | `LOCKDIR="${SB_LOCKDIR:-…}"`；`tests/run.sh` 每个测试文件一把 `mktemp -d` 下的锁；7 个测试文件的 teardown 从 `rm -rf /tmp/.singbox-sh.lock` 改为删 `$SB_LOCKDIR`（原来那句会删掉 **live** 命令的锁） | 断言 14 先红（`退出 0，没撞上指定目录里的锁`）后绿；连跑 10 次红 0 次 |
+| U1 迁移表 | `2b659a4` | `_cfg_pylib`（表 + 路径谓词 + 片段生成）、C 路、按路径去重与来源合并、`notice` 档、`covers` 提示；B 路 walker 认 `allOf` / `unevaluatedProperties` | 18 条断言先红后绿；真内核 1.14.0 对 17 个 probe fixture 的命中矩阵与「问题」表逐行一致；5 个变异全被抓 |
+| U2 沙箱日志档 | `07b8cfc` | `--deep`（`_cfg_deep_runlog`，复用 `--apply` 第 3 道那套沙箱）、`_cfg_audit cfg [runlog]`、第 3 道与 `update` 阶段 1 的 `run.log` 喂 D 路、跨 1.14.0 升级打规则集语义 notice、假内核 `run` 的 `SB_FAKE_RUN_LOG` 后门 | 11 条断言先红（`--deep` 仍 `die 尚未实现`）后绿；关掉 D 路读日志 → 4 条红 |
+| U3 改写层 | `88e958f` | `_cfg_migrate` / `_cfg_whitelist_diff` 共用表里 `fix: auto` 的 3 条；`_cfg_auto_hits`；确认提示逐条列命中数；命中 0 时「无需改写」早退；第 4 道按命中数归零 | 断言 8/9/10 先红（`store_rdrc` 落地后 diff 为空）后绿；跳过 `rename_if_true` → 5 条红；配对检查 + 新增侧检查同时变异 → T10 红 |
+| U4 文档 | 本次 | `config.example.json` 加 `$schema`；`best-practices.md` 的 `$schema` 段与 4.2.1 `dns_mode` 立场；`script-usage.md` 重写 audit 节 + 「迁移表怎么维护」；README、CLAUDE.md、上一轮文档顶部指针 | `sdlc-check` 退 0 |
+
+### 待定问题的裁定
+
+1. `--deep` 等待时长：沿用 `SANDBOX_WAIT=40`，与第 3 道同一套 `_sb_probe_socks`。
+2. `legacy_address_filter_rs` 的 notice：先按每次都打实现（样例配置会打 2 条），真机嫌吵再改——等 lzyMeta 看过报告。
+3. `snippet` 的 `tag`：带 `mig-af-<原规则下标>`，不查撞名，片段不落地。
+4. flaky 根因：基线单跑本来就没红，隔离后 10 次全绿——只能说「隔离后没复现」，不能说根因确认是锁。
+5. `covers` 阈值：按 **minor** 比——把内核版本的 patch 位抹成 0 再用三段的 `ver_gt`（1.14.9 不打，1.15.0 打）。
+
+### 实现中发现、与本文不同的事
+
+- **B 路在真内核上对 DNS / 路由规则整段是盲的。** 真 schema 的 `DNSRule` / `Rule` 是
+  `oneOf[{unevaluatedProperties:false, allOf:[{匹配字段}, {oneOf: 动作分支}]}]`，上一轮的 walker 不认 `allOf`
+  就收手，所以「问题」表里 `strategy` / `rule_set_ip_cidr_accept_empty` 的 schema ✓ 在真机上原本抓不到
+  （那两个 ✓ 的依据是源码 `schema:"omit"`，不是 walker 实测）。修 walker 时又踩到 `reject` 分支的 `method`
+  枚举含 `""`：「缺键算隐式命中」会把没写 `action` 的规则误归到 `reject`。两处都修了，`schema-min.json`
+  照真 schema 的形状重写让测试守住它。修完后 17 个 probe fixture 在真 schema 上零误报。
+- 发现行格式**尾部加了可选第 6 列** `snippet`（换行/制表符转义），前 5 列不变；旧消费者（挂载点、verify）不受影响。
+- `deprecated.md` 里 `download_detour` 那条的 Migration 链接误指 ACME 一节；v1.14.0 的 `migration.md` 既无
+  `download_detour` 也无 `strategy` 的章节。表里这两条链接分别指向 rule-set 配置页的 `http_client` 小节和
+  DNS rule action 页的 `strategy` 小节，`note` 里注明。
+- `config/config.example.json` 里还有 21 条 `download_detour`（模板没跟着 live 迁）。本文只让它加 `$schema`，
+  没动——另立项。
+- `tests/fixtures/migration-anchors.txt` 在 U0 提交前就已生成，被一起带进了 `fd32969`。
+
+### 人工验收（要动 live，本人跑）
+
+```bash
+./singbox.sh config audit             # 期望：退 0 或只有 notice；notice 点名 dns.rules 里的 query_type
+./singbox.sh config audit --deep      # 期望：沙箱建链成功，D 路无新增发现
+./singbox.sh -n config audit --apply  # 期望：三条规则 0/0/0 处，「无需改写」
+for i in 1 2 3 4 5; do ./tests/run.sh >/dev/null 2>&1 || echo "第 $i 次红"; done
+```

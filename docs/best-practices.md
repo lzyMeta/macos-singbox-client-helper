@@ -540,7 +540,11 @@ App → utun 虚拟网卡 → sniff（还原域名）→ DNS 劫持 → 路由�
 
 官方定义的顶层键有 `log` / `dns` / `ntp` / `certificate` / `endpoints` / `inbounds` / `outbounds` / `route` / `services` / `experimental` 等，本配置用到五个。
 
-建议加一行 `"$schema": "https://sing-box.sagernet.org/schema.json"`，编辑器就能补全和校验字段名。
+`config/config.example.json` 顶层带一行 `"$schema": "https://sing-box.sagernet.org/schema.json"`：
+这是给手写配置的人用的——VS Code 之类的编辑器读到它就能补全字段名、对拼错的键画红线。
+它本身不是 sing-box 的配置项，内核 1.14.0 的 `check` 与 `schema` 都把它当合法顶层键接受
+（`option/options.go:17`），所以 `config audit` 不会报它。它也**不会**被 `config audit` 建议引入：
+「建议加 X」是策略，审查只管合法性。想要就抄这一行，不想要删掉也没有任何影响。
 
 | `log` 字段 | 值 | 说明 |
 |---|---|---|
@@ -1050,6 +1054,20 @@ sudo dscacheutil -flushcache
 ```
 
 填什么其实无所谓——反正会被 sing-box 劫持。填 `1.1.1.1` 只是为了保证它**不是内网地址**，这样查询才会走默认路由进 TUN。
+
+#### 4.2.1 脚本切系统 DNS 与 1.14 的 `dns_mode`：保留，不引入 `dns_mode`
+
+sing-box 1.14.0 给 `tun` 入站加了 `dns_mode`，文档说它能在 Apple 平台上做 per-interface DNS。
+这会让人以为脚本的 `networksetup -setdnsservers`（`dns_apply_proxy`）可以退休了——**不能**，立场是保留，
+依据如下：
+
+- sing-box v1.14.0 依赖 sing-tun `v0.9.0-beta.4`（`go.mod:58`）。那个版本的 `tun_darwin.go` **没有任何设置接口 DNS
+  的代码**；设置接口 DNS 的实现只有 `tun_windows.go:84-109` 的 `luid.SetDNS`，以及 Linux 的 nftables / iproute2 分支。
+- 文档里「per-interface DNS on Apple platforms」指的是图形客户端走 NetworkExtension 的路径，命令行内核在 macOS 上没有这条路。
+- 真机旁证：内核 1.14.0 运行中，Wi-Fi 的 DNS 仍是脚本设的 `1.1.1.1`，`scutil --dns` 里没有 utun 作用域的解析器。
+
+所以 `dns_backup_save` / `dns_apply_proxy` 的行为一字不动。**sing-tun 在 darwin 上实现接口 DNS 设置的那天要重评**——
+看点是 sing-tun 的 `tun_darwin.go` 出现 DNS 相关代码，届时 `dns_mode` 才有可能替代 `networksetup`。
 
 ### 4.3 退掉其他 VPN 客户端
 
