@@ -1,3 +1,9 @@
+---
+kind: spec
+status: shipped
+covers:
+  - tests/update.test.sh
+---
 # 内核安全升级（update 重做 + rollback）
 
 ## 问题

@@ -1,3 +1,8 @@
+---
+kind: design
+covers:
+  - config/config.example.json
+---
 # 在 macOS 上直接运行 sing-box —— 配置最佳实践
 
 > 环境：MacBook Pro / Intel，本机代理（非软路由），macOS 26

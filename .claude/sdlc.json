@@ -19,6 +19,13 @@
         }
       },
       "maxCallsPerWindow": 15
+    },
+    "guard": {
+      "entry": "README.md",
+      "extra": [
+        "README.md",
+        "CLAUDE.md"
+      ]
     }
   }
 }

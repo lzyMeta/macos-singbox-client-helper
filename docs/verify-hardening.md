@@ -1,3 +1,9 @@
+---
+kind: spec
+status: shipped
+covers:
+  - tests/verify.test.sh
+---
 # cmd_verify 收紧：消除静默跳过，QUIC 改为真探测，第 5 步补上判据
 
 ## 问题

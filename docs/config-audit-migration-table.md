@@ -1,3 +1,11 @@
+---
+kind: spec
+status: shipped
+covers:
+  - tests/config-audit.test.sh
+  - tests/fixtures/migration-anchors.txt
+  - tests/fixtures/schema-min.json
+---
 # `config audit` 数据源扩展：内置迁移表与沙箱日志档
 
 ## 问题

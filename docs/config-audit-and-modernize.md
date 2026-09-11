@@ -1,3 +1,9 @@
+---
+kind: spec
+status: shipped
+covers:
+  - tests/config-audit.test.sh
+---
 # 配置审查与一键适配（`config audit`）
 
 > 后续：`docs/config-audit-migration-table.md`（2026-09-10）把发现层从两路扩到四路（加内置迁移表与

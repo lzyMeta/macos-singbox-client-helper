@@ -1,3 +1,10 @@
+---
+kind: spec
+status: shipped
+covers:
+  - tests/install.test.sh
+  - tests/selfupdate.test.sh
+---
 # singbox 命令的自动安装与脚本自更新
 
 ## 问题
