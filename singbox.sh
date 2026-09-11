@@ -2794,13 +2794,17 @@ _cfg_audit_notice() {
   return 0
 }
 
-# 改写层。**只有一条规则**，逐字搬移值：
-#   route.rule_set[*].download_detour: "X"  →  http_client: {"detour": "X"}
+# 改写层。规则来自迁移表里 fix=auto 的条目（_cfg_pylib 的 TABLE），目前 3 条，全是
+# 纯键名改写、官方 migration.md 有完整前后 JSON 对照且语义无分支：
+#   route.rule_set[type=remote].download_detour: "X"  →  http_client: {"detour": "X"}   （wrap）
+#   dns.independent_cache                              →  删键                            （delete）
+#   experimental.cache_file.store_rdrc: true           →  store_dns: true；否则删键        （rename_if_true）
+# _cfg_migrate 与 _cfg_whitelist_diff **共用这张表**：改写按它做，白名单按它算「该有哪些 diff」。
 #
-# 用内联 http_client 对象，不引顶层 http_clients[] 数组、不设 route.default_http_client。
-# 理由是实测出来的：check 放过 tag 引用错误（http_client:"rs_dl" 而顶层 tag 是
-# "rs-dl"，check 退 0），只有真跑起来才 FATAL。内联写法没有 tag 引用，从源头免疫
-# 这一类错误；而 default_http_client 会改变所有隐式下载通道（external_ui_download、
+# download_detour 用内联 http_client 对象，不引顶层 http_clients[] 数组、不设
+# route.default_http_client。理由是实测出来的：check 放过 tag 引用错误（http_client:"rs_dl"
+# 而顶层 tag 是 "rs-dl"，check 退 0），只有真跑起来才 FATAL。内联写法没有 tag 引用，从源头
+# 免疫这一类错误；而 default_http_client 会改变所有隐式下载通道（external_ui_download、
 # 证书提供者…），影响面远超规则集，四道验收一道都挡不住。
 _cfg_migrate() {
   local src="$1" dst="$2"
@@ -2811,27 +2815,60 @@ _cfg_migrate() {
     cp "$SB_FAKE_MIGRATED" "$dst"
     return $?
   fi
-  python3 - "$src" "$dst" <<'PY'
+  local lib; lib=$(mktmp); _cfg_pylib >"$lib"
+  python3 - "$lib" "$src" "$dst" <<'PY'
 import json, sys
-src, dst = sys.argv[1], sys.argv[2]
+exec(open(sys.argv[1]).read())
+src, dst = sys.argv[2], sys.argv[3]
 d = json.load(open(src))
-for rs in d.get("route", {}).get("rule_set", []):
-    if not isinstance(rs, dict) or "download_detour" not in rs:
+for e in TABLE:
+    if e["fix"] != "auto":
         continue
-    # 逐字搬移：不解析、不规范化、不补默认值。值搬错是四道验收全挡不住的那一型
-    # （② 型），唯一的防线就是这一行本身精确到值。
-    rs["http_client"] = {"detour": rs.pop("download_detour")}
+    op = e["rewrite"]["op"]
+    for path, container, key, value in table_hits(d, e):
+        # 逐字搬移：不解析、不规范化、不补默认值。值搬错是四道验收全挡不住的那一型
+        # （② 型），唯一的防线就是这几行本身精确到值。
+        if op == "wrap":
+            container[e["rewrite"]["new_key"]] = {e["rewrite"]["wrap_key"]: container.pop(key)}
+        elif op == "delete":
+            container.pop(key)
+        elif op == "rename_if_true":
+            v = container.pop(key)
+            if v is True and e["rewrite"]["new_key"] not in container:
+                container[e["rewrite"]["new_key"]] = True
 json.dump(d, open(dst, "w"), ensure_ascii=False, indent=2)
 open(dst, "a").write("\n")
+PY
+}
+
+# _cfg_auto_hits <cfg>：每条 auto 规则在配置里的命中数，一行一条：id<TAB>n<TAB>模式
+# --apply 的确认提示、「无需改写」早退与第 4 道归零都用它。
+_cfg_auto_hits() {
+  local lib; lib=$(mktmp); _cfg_pylib >"$lib"
+  python3 - "$lib" "$1" <<'PY'
+import json, sys
+exec(open(sys.argv[1]).read())
+try:
+    d = json.load(open(sys.argv[2]))
+except Exception:
+    d = {}
+for e in TABLE:
+    if e["fix"] == "auto":
+        print("%s\t%d\t%s" % (e["id"], len(table_hits(d, e)), " / ".join(e["match"]["paths"])))
 PY
 }
 
 # 第 1 道验收：离线白名单结构 diff。
 # 结构 diff 而非文本 diff —— 改写会把 http_client 放到键序末尾，文本 diff 会把这个
 # 无语义的位移报成改动。
+# 「该有哪些 diff」从**原配置** + 规则表独立推出来（不看改写结果）：每处命中允许一个删除，
+# wrap / rename 型再允许一个配对的新增，且新增的值必须等于映射后的旧值（store_rdrc → store_dns
+# 的映射是恒等）。此外的任何差异都是越界。
 _cfg_whitelist_diff() {
-  python3 - "$1" "$2" <<'PY'
+  local lib; lib=$(mktmp); _cfg_pylib >"$lib"
+  python3 - "$lib" "$1" "$2" <<'PY'
 import json, sys
+exec(open(sys.argv[1]).read())
 
 def flat(o, p="", out=None):
     if out is None:
@@ -2847,36 +2884,50 @@ def flat(o, p="", out=None):
     return out
 
 try:
-    a = flat(json.load(open(sys.argv[1])))
-    b = flat(json.load(open(sys.argv[2])))
+    orig = json.load(open(sys.argv[2]))
+    a = flat(orig)
+    b = flat(json.load(open(sys.argv[3])))
 except Exception as e:
     sys.stderr.write("      读不出配置：%s\n" % e)
     sys.exit(1)
 
 MISS = object()
-problems = []
+# expected: path -> 期望在改写结果里的值（MISS = 期望被删）；pairs: 删除路径 -> (新增路径, 期望值)
+expected, pairs = {}, {}
+for e in TABLE:
+    if e["fix"] != "auto":
+        continue
+    rw = e["rewrite"]
+    for path, container, key, value in table_hits(orig, e):
+        expected[path] = MISS
+        parent = path.rsplit(".", 1)[0]
+        if rw["op"] == "wrap":
+            newp = "%s.%s.%s" % (parent, rw["new_key"], rw["wrap_key"])
+            expected[newp] = value
+            pairs[path] = (newp, value)
+        elif rw["op"] == "rename_if_true" and value is True and rw["new_key"] not in container:
+            newp = "%s.%s" % (parent, rw["new_key"])
+            expected[newp] = True
+            pairs[path] = (newp, True)
 
+problems = []
 for k in sorted(set(a) | set(b)):
     av, bv = a.get(k, MISS), b.get(k, MISS)
     if av is bv or av == bv:
         continue
-    leaf = k.rsplit(".", 1)[-1]
-    # 允许的删除：rule_set 条目上的 download_detour，且值必须原样出现在
-    # 同一条目的 http_client.detour 上
-    if bv is MISS and leaf == "download_detour" and ".rule_set[" in k:
-        want = k.rsplit(".", 1)[0] + ".http_client.detour"
-        got = b.get(want, MISS)
-        if got is MISS:
-            problems.append("%s 被删掉了，但 %s 没有出现 —— detour 丢了" % (k, want))
-        elif got != av:
-            problems.append("%s 的值没有逐字搬移：%r → %s = %r" % (k, av, want, got))
-        continue
-    # 允许的新增：与上面配对的那个 detour
-    if av is MISS and k.endswith(".http_client.detour") and ".rule_set[" in k:
-        src = k[:-len(".http_client.detour")] + ".download_detour"
-        if a.get(src, MISS) is MISS:
-            problems.append("%s 是凭空新增的：原配置那一条并没有 download_detour" % k)
-        continue
+    if k in expected:
+        want = expected[k]
+        if want is MISS and bv is MISS:
+            newp = pairs.get(k)
+            if newp is not None:
+                got = b.get(newp[0], MISS)
+                if got is MISS:
+                    problems.append("%s 被删掉了，但 %s 没有出现 —— %s 丢了" % (k, newp[0], newp[0].rsplit(".", 1)[-1]))
+                elif got != newp[1] or type(got) is not type(newp[1]):
+                    problems.append("%s 的值没有逐字搬移：%r → %s = %r" % (k, newp[1], newp[0], got))
+            continue
+        if want is not MISS and av is MISS and bv == want and type(bv) is type(want):
+            continue
     problems.append("白名单外的改动：%s  %r → %r"
                     % (k, None if av is MISS else av, None if bv is MISS else bv))
 
@@ -2904,7 +2955,23 @@ _cfg_apply() {
   kver=$("$BIN" version 2>/dev/null | head -1 | awk '{print $3}')
   [ -n "$kver" ] || die "取不到内核版本，--apply 拒绝在未知版本上改写配置"
   if ver_gt 1.14.0 "$kver"; then
-    die "内核 ${kver} 还不认识 http_client（1.14.0 起才有），--apply 拒绝改写"
+    die "内核 ${kver} 还不认识 http_client / store_dns（1.14.0 起才有），--apply 拒绝改写"
+  fi
+
+  # 逐条列出将改哪些键、各几处——三条规则同时命中时，人要看得出改了什么。
+  step "将改写的规则"
+  local hits total=0 hid hn hpat
+  hits=$(_cfg_auto_hits "$cfg")
+  while IFS="$(printf '\t')" read -r hid hn hpat; do
+    [ -n "$hid" ] || continue
+    printf '      %-20s %s 处   %s\n' "$hid" "$hn" "$hpat"
+    total=$((total + hn))
+  done <<HITS
+$hits
+HITS
+  if [ "$total" = 0 ]; then
+    ok "无需改写：三条规则命中 0 处，${cfg} 一字未动"
+    return 0
   fi
 
   local new; new=$(mktmp)
@@ -2913,7 +2980,7 @@ _cfg_apply() {
 
   step "验收 1/4　白名单结构 diff"
   if _cfg_whitelist_diff "$cfg" "$new"; then
-    ok "改动只落在 download_detour → http_client.detour 上"
+    ok "改动只落在规则表列出的路径上，值逐字搬移"
   else
     die "改写越界，拒绝落地（${cfg} 一字未动）"
   fi
@@ -2956,12 +3023,12 @@ _cfg_apply() {
   # 而漏改恰恰是另外三道全挡不住的那一型。
   _cfg_audit "$new" "$runlog" >"$rows4" \
     || die "第 4 道没做成（审不了改写结果），拒绝落地（${cfg} 一字未动）"
-  left=$(grep -c 'download_detour' "$rows4" 2>/dev/null || true)
-  left=$(printf '%s' "${left:-0}" | tr -d ' ')
+  # 归零的判据是规则表自己的谓词：三条 auto 规则在新配置上的命中数之和必须是 0。
+  left=$(_cfg_auto_hits "$new" | awk -F'\t' '{n += $2} END {print n + 0}')
   if [ "${left:-0}" != 0 ]; then
-    die "改写后仍有 ${left} 处 download_detour，拒绝落地（${cfg} 一字未动）"
+    die "改写后仍有 ${left} 处规则命中，拒绝落地（${cfg} 一字未动）"
   fi
-  ok "新配置里 download_detour 已归零"
+  ok "新配置里三条规则的命中数已归零"
 
   #--- 落地 -------------------------------------------------------------
   # 四道都过了才走到这里。-n 在这一步收手：前面那四道是只读的，干跑照样走完，

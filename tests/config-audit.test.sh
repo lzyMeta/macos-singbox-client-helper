@@ -781,6 +781,121 @@ else
 fi
 unset SB_FAKE_RUN_LOG SB_FAKE_UDP
 
+#=============================================================================
+# 改写层：3 条纯键名规则共用一张规则表 —— docs/config-audit-migration-table.md
+#=============================================================================
+echo "验证 config audit --apply 的三条规则"
+
+# flatdiff <before> <after>：独立于实现的扁平结构 diff，每行 "path<TAB>before<TAB>after"
+# （缺失记作 MISS）。不复用实现里的白名单校验器——那等于拿被测对象给自己打分。
+flatdiff() {
+  python3 - "$1" "$2" <<'PY'
+import json, sys
+def flat(o, p="", out=None):
+    if out is None: out = {}
+    if isinstance(o, dict):
+        for k, v in o.items(): flat(v, (p + "." + k) if p else k, out)
+    elif isinstance(o, list):
+        for i, v in enumerate(o): flat(v, "%s[%d]" % (p, i), out)
+    else: out[p] = o
+    return out
+a = flat(json.load(open(sys.argv[1]))); b = flat(json.load(open(sys.argv[2])))
+for k in sorted(set(a) | set(b)):
+    if a.get(k, "MISS") != b.get(k, "MISS"):
+        print("%s\t%s\t%s" % (k, json.dumps(a.get(k, "MISS")), json.dumps(b.get(k, "MISS"))))
+PY
+}
+
+#-- T8. store_rdrc：true 且无 store_dns → 改名 store_dns: true ---------------------
+setup
+use_cfg bad-store-rdrc
+cp "$(livecfg)" "$ROOT/before.json"
+export SB_FAKE_UDP=dead
+echo 1 > "$SB_FAKE_STATE/running"
+audit --apply
+if [ "$CODE" = 0 ]; then ok "store_rdrc --apply：退出 0"; else ng "store_rdrc --apply：期望 0，实际 ${CODE}"; fi
+D=$(flatdiff "$ROOT/before.json" "$(livecfg)")
+WANT=$(printf 'experimental.cache_file.store_dns\t"MISS"\ttrue\nexperimental.cache_file.store_rdrc\ttrue\t"MISS"')
+if [ "$D" = "$WANT" ]; then
+  ok "store_rdrc --apply：结构 diff 恰好是 store_rdrc 删、store_dns 增，值 true"
+else
+  ng "store_rdrc --apply：diff 不是预期的那两行" "$D"
+fi
+audit
+if [ "$CODE" = 0 ]; then ok "store_rdrc --apply 后重跑发现层：归零"; else ng "store_rdrc --apply 后重跑：退 ${CODE}"; fi
+
+setup
+use_cfg bad-store-rdrc-has-store-dns
+cp "$(livecfg)" "$ROOT/before.json"
+export SB_FAKE_UDP=dead
+echo 1 > "$SB_FAKE_STATE/running"
+audit --apply
+D=$(flatdiff "$ROOT/before.json" "$(livecfg)")
+WANT=$(printf 'experimental.cache_file.store_rdrc\ttrue\t"MISS"')
+if [ "$CODE" = 0 ] && [ "$D" = "$WANT" ]; then
+  ok "store_rdrc 已有 store_dns：只删不增"
+else
+  ng "store_rdrc 已有 store_dns：diff 不是只删 store_rdrc（退 ${CODE}）" "$D"
+fi
+
+#-- T9. independent_cache：只删 ------------------------------------------------------
+setup
+use_cfg bad-independent-cache
+cp "$(livecfg)" "$ROOT/before.json"
+export SB_FAKE_UDP=dead
+echo 1 > "$SB_FAKE_STATE/running"
+audit --apply
+D=$(flatdiff "$ROOT/before.json" "$(livecfg)")
+WANT=$(printf 'dns.independent_cache\ttrue\t"MISS"')
+if [ "$CODE" = 0 ] && [ "$D" = "$WANT" ]; then
+  ok "independent_cache --apply：只删 dns.independent_cache"
+else
+  ng "independent_cache --apply：diff 不是只删那一个键（退 ${CODE}）" "$D"
+fi
+
+#-- T10. 三条规则同时命中：确认提示逐条列命中数；值映射被篡改时第 1 道拒绝 -------------
+setup
+use_cfg bad-three-rules
+cp "$(livecfg)" "$ROOT/before.json"
+export SB_FAKE_UDP=dead
+echo 1 > "$SB_FAKE_STATE/running"
+audit --apply
+if [ "$CODE" = 0 ]; then ok "三条规则 --apply：退出 0"; else ng "三条规则 --apply：期望 0，实际 ${CODE}"; fi
+if inlog 'download_detour.*1 处' && inlog 'independent_cache.*1 处' && inlog 'store_rdrc.*1 处'; then
+  ok "三条规则 --apply：确认提示逐条列出三条规则各 1 处"
+else
+  ng "三条规则 --apply：确认提示没有逐条列出命中数"
+fi
+D=$(flatdiff "$ROOT/before.json" "$(livecfg)")
+if [ "$(printf '%s\n' "$D" | wc -l | tr -d ' ')" = 5 ] \
+   && printf '%s\n' "$D" | grep -q '^route.rule_set\[0\].http_client.detour	"MISS"	"vpstrans"$' \
+   && printf '%s\n' "$D" | grep -q '^experimental.cache_file.store_dns	"MISS"	true$'; then
+  ok "三条规则 --apply：diff 恰好 5 行（1 处 detour 搬移 + 2 处删 + 1 处改名）"
+else
+  ng "三条规则 --apply：diff 不是预期的 5 行" "$D"
+fi
+# 值映射被篡改：store_rdrc: true 却写成了 store_dns: false —— 第 1 道必须拒
+setup
+use_cfg bad-three-rules
+export SB_FAKE_UDP=dead
+python3 - "$FIX/bad-three-rules.json" "$ROOT/tampered.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["route"]["rule_set"][0]["http_client"] = {"detour": d["route"]["rule_set"][0].pop("download_detour")}
+d["dns"].pop("independent_cache")
+d["experimental"]["cache_file"].pop("store_rdrc")
+d["experimental"]["cache_file"]["store_dns"] = False
+json.dump(d, open(sys.argv[2], "w"), indent=2)
+PY
+export SB_FAKE_MIGRATED="$ROOT/tampered.json"
+audit --apply
+if [ "$CODE" != 0 ] && inlog '验收 1/4' && ! inlog '验收 2/4'; then
+  ok "值映射篡改（store_dns: false）：第 1 道拒绝，没走到第 2 道"
+else
+  ng "值映射篡改：没被第 1 道拒绝（退 ${CODE}）"
+fi
+unset SB_FAKE_MIGRATED SB_FAKE_UDP
+
 echo
 printf '通过 %d，失败 %d\n' "$pass" "$fail"
 [ "$fail" = 0 ]
