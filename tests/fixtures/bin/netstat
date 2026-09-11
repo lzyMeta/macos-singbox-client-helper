@@ -1,17 +1,31 @@
 #!/usr/bin/env bash
-# 假 netstat。形状照抄真机：split-default 走 128.0/1，另有一条 TUN 自身地址的
-# 主机路由（UH）——后者只证明「接口起来了」，不证明「流量被接管」。
-#   SB_FAKE_NO_TUN=1        整张表里没有 utun
-#   SB_FAKE_TUN_HOST_ONLY=1 只有那条 UH 主机路由，没有 default/0/1/128.0/1
-#                           指向 utun——接口在、流量却没进来
-#   SB_FAKE_NO_GW=1         整张表里没有默认网关那行（verify 第 5 步的硬失败）
+# 假 netstat。形状照抄真机（sing-box 1.14.0 / sing-tun v0.9）：auto_route 把 0/1 这一半
+# 拆成 1/8 2/7 4/6 8/5 16/4 32/3 64/2 七段装（避开 0.0.0.0/8），上半仍是整条 128.0/1，
+# 另有一条 TUN 自身地址的主机路由（UH）——后者只证明「接口起来了」，不证明「流量被接管」。
+#   SB_FAKE_NO_TUN=1          整张表里没有 utun
+#   SB_FAKE_TUN_HOST_ONLY=1   只有那条 UH 主机路由，没有任何默认/分流默认路由指向 utun
+#                             ——接口在、流量却没进来
+#   SB_FAKE_TUN_UPPER_ONLY=1  只有 128.0/1 指向 utun，下半七段缺席——一半地址从 en0 裸奔
+#   SB_FAKE_TUN_ZERO_ONE=1    下半用整条 0/1 而不是七段（老 sing-tun 的装法），也算接管
+#   SB_FAKE_NO_GW=1           整张表里没有默认网关那行（verify 第 5 步的硬失败）
 echo "Routing tables"
 echo
 echo "Internet:"
 echo "Destination        Gateway            Flags        Netif Expire"
 [ "${SB_FAKE_NO_GW:-}" != 1 ] && echo "default            192.168.71.1       UGScg          en0"
 if [ "${SB_FAKE_NO_TUN:-}" != 1 ]; then
-  [ "${SB_FAKE_TUN_HOST_ONLY:-}" != 1 ] && echo "128.0/1            172.18.0.1         UGSc      utun9527"
+  if [ "${SB_FAKE_TUN_HOST_ONLY:-}" != 1 ]; then
+    if [ "${SB_FAKE_TUN_UPPER_ONLY:-}" != 1 ]; then
+      if [ "${SB_FAKE_TUN_ZERO_ONE:-}" = 1 ]; then
+        echo "0/1                172.18.0.1         UGSc      utun9527"
+      else
+        for d in "1     " "2/7   " "4/6   " "8/5   " "16/4  " "32/3  " "64/2  "; do
+          echo "${d}             172.18.0.1         UGSc      utun9527"
+        done
+      fi
+    fi
+    echo "128.0/1            172.18.0.1         UGSc      utun9527"
+  fi
   echo "172.18.0.1         172.18.0.1         UH        utun9527"
 fi
 echo "127                127.0.0.1          UCS            lo0"

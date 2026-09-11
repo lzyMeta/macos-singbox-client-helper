@@ -1433,13 +1433,13 @@ except Exception: pass" 2>/dev/null)
   else
     ifconfig 2>/dev/null | grep -q utun && ok "存在 utun 接口" || warn "未见 utun 接口"
   fi
-  local routes; routes=$(netstat -rn -f inet 2>/dev/null | grep -E 'default|^0/1|^128\.0/1')
-  printf '%s\n' "$routes" | sed 's/^/      /'
-  if printf '%s' "$routes" | grep -q utun; then
+  _tun_route_lines | sed 's/^/      /'
+  local rstate; rstate=$(_tun_route_state)
+  if [ "$rstate" = full ]; then
     ok "路由已指向 utun"
     dim "指向 en0 的那条 default 必须保留 —— 内核出站流量要靠它"
   else
-    bad "路由未指向 utun：TUN 未接管，跑 doctor"
+    bad "$(_tun_route_msg "$rstate")，跑 doctor"
   fi
 
   step "监听端口"
@@ -3590,24 +3590,61 @@ _sb_probe_socks() {
   return $rc
 }
 
+# TUN 路由判据，status / _sb_health / doctor 三处共用。
+# auto_route 装的是「分流默认路由」：上半 128.0/1 一整条；下半在老 sing-tun 是整条 0/1，
+# sing-box 1.14.0（sing-tun v0.9）起拆成 1/8 2/7 4/6 8/5 16/4 32/3 64/2 七段——刻意避开
+# 0.0.0.0/8。只认 0/1 会把七段形状误报成「未接管」（2026-09-10 真机就是这样）；只认 128.0/1
+# 又会把「只有上半在、下半七段缺席」判成健康，而那时 1.0.0.0–127.255.255.255 全从 en0 裸奔。
+# 所以两半都要：stdout 打 full / upper / lower / none，返回值 0 只有 full。
+# ⚠️ 不要 `netstat | grep -q`：grep -q 一命中就退出，netstat 吃 SIGPIPE，pipefail 把 141
+# 当整条管道的退出码，「路由在」偶发判成「路由没了」。先收进变量再判。
+_tun_route_state() {
+  local rt upper=0 lower=0 d
+  rt=$(netstat -rn -f inet 2>/dev/null | grep utun)
+  printf '%s\n' "$rt" | grep -Eq '^128\.0/1[[:space:]]' && upper=1
+  if printf '%s\n' "$rt" | grep -Eq '^0/1[[:space:]]'; then
+    lower=1
+  else
+    lower=1
+    for d in '1' '2/7' '4/6' '8/5' '16/4' '32/3' '64/2'; do
+      printf '%s\n' "$rt" | grep -Eq "^${d}[[:space:]]" || { lower=0; break; }
+    done
+  fi
+  case "${upper}${lower}" in
+    11) echo full;  return 0 ;;
+    10) echo upper; return 1 ;;
+    01) echo lower; return 1 ;;
+    *)  echo none;  return 1 ;;
+  esac
+}
+# 判读文案也统一：$1 是 _tun_route_state 的输出
+_tun_route_msg() {
+  case "$1" in
+    upper) echo "TUN 只接管了一半默认路由：128.0/1 在，下半（0/1 或 1/8…64/2 七段）缺席，1.0.0.0–127.255.255.255 正从 en0 直连" ;;
+    lower) echo "TUN 只接管了一半默认路由：下半在，128.0/1 缺席，128.0.0.0–255.255.255.255 正从 en0 直连" ;;
+    *)     echo "路由未指向 utun：TUN 未接管" ;;
+  esac
+}
+# 给转储/status 看的路由行：默认网关 + 两半（含七段）
+_tun_route_lines() {
+  netstat -rn -f inet 2>/dev/null | grep -E '^default|^0/1|^128\.0/1|^(1|2/7|4/6|8/5|16/4|32/3|64/2)[[:space:]]'
+}
+
 # 升级后要确认的三件确定性的事：进程活着、TUN 路由在、监听端口在听。
 # 三样都不依赖外网，是「起来了没有」最硬的判据——阶段 3 那些依赖公网的检查
 # 会抖，这一层不会。
 _sb_health() {
   local n=0 port routes
   running && ok "进程存活" || { bad "进程未出现"; n=$((n + 1)); }
-  # ⚠️ 两处都别想当然：
-  # 1) 别写成 `netstat … | grep -q utun`。grep -q 一命中就退出，netstat 吃 SIGPIPE
-  #    死掉，pipefail 把那个 141 当成整条管道的退出码——「路由在」被判成「路由没了」，
-  #    撞不撞得上取决于调度时机，是偶发的。这里的 grep 不带 -q，会读到 EOF，没这问题。
-  # 2) 别拿整张表宽匹配 utun。TUN 接口自身那条 UH 主机路由只证明接口建起来了，
-  #    不证明流量被接管；接口在而 auto_route 没装上，流量就从 en0 裸奔——那正是
-  #    这个功能要挡的故障。判据与 cmd_status 一致：先过滤出默认/分流默认路由再看。
-  routes=$(netstat -rn -f inet 2>/dev/null | grep -E 'default|^0/1|^128\.0/1')
-  case "$routes" in
-    *utun*) ok "TUN 已接管默认路由" ;;
-    *)      bad "默认路由没有指向 utun —— TUN 未接管"; n=$((n + 1)) ;;
-  esac
+  # 判据在 _tun_route_state：两半都要指向 utun。TUN 接口自身那条 UH 主机路由只证明
+  # 接口建起来了，不证明流量被接管；只有上半在也不算——下半那一半地址从 en0 裸奔，
+  # 正是这个功能要挡的故障。
+  routes=$(_tun_route_state)
+  if [ "$routes" = full ]; then
+    ok "TUN 已接管默认路由（两半都指向 utun）"
+  else
+    bad "$(_tun_route_msg "$routes")"; n=$((n + 1))
+  fi
   port=$(sock_addr); port="${port##*:}"
   if _sb_port_listening "$port"; then
     ok "监听端口 ${port} 在听"
@@ -3986,7 +4023,7 @@ cmd_doctor() {
     echo; echo "===== launchd ====="; sudo launchctl print "$LABEL" 2>&1 | head -30
     echo; echo "===== plist ====="; ls -l "$PLIST" 2>&1; plutil -lint "$PLIST" 2>&1
     echo; echo "===== 配置校验 ====="; [ -f "$CFG" ] && sudo "$BIN" check -c "$CFG" 2>&1 || echo "(无配置)"
-    echo; echo "===== 路由 ====="; netstat -rn -f inet 2>&1 | grep -E 'default|^0/1|^128\.0/1'
+    echo; echo "===== 路由 ====="; _tun_route_lines
     echo; echo "===== utun ====="; ifconfig 2>&1 | grep -A2 utun
     echo; echo "===== IPv6 ====="; ifconfig 2>&1 | grep inet6
     echo; echo "===== 网络服务 ====="
@@ -4016,7 +4053,7 @@ cmd_doctor() {
   grep -qi "deprecated" "$out" && { warn "存在废弃字段（不阻止启动，但可能静默降级）"; DOCTOR_FOUND=1; }
   # 再加配置视角：运行日志只有跑起来才有，而配置摆在那儿随时可读。
   _cfg_audit_notice "$CFG"
-  netstat -rn -f inet 2>/dev/null | grep -E 'default|^0/1' | grep -q utun || _hit "路由未指向 utun：TUN 未接管"
+  local rstate; rstate=$(_tun_route_state) || _hit "$(_tun_route_msg "$rstate")"
   [ -f "$PLIST" ] && { plutil -lint "$PLIST" >/dev/null 2>&1 || _hit "plist 语法错误：删掉后重新 install"; }
   grep -q "IPv6=On" "$out" && { warn "有网络服务的 IPv6 未关：跑 $(basename "$0") sysprep"; DOCTOR_FOUND=1; }
   running || _hit "sing-box 未运行"

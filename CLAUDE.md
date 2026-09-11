@@ -9,11 +9,16 @@
 ./singbox-selfcheck.sh && ./tests/run.sh
 ```
 
-前半段是 `singbox.sh` 的静态自检（13 项），后半段是 `tests/` 下的九个测试文件：
+前半段是 `singbox.sh` 的静态自检（13 项），后半段是 `tests/` 下的十个测试文件：
 `cli`（参数解析）、`selfcheck`（自检项本身）、`install`（装 `singbox` 命令）、
 `selfupdate`（`update` 阶段 S 的脚本自更新）、`update`（内核升级状态机与 `rollback`）、
 `logs`（日志体积与截断）、`platform`（架构判定）、`verify`（两档退出码）、
-`config-audit`（四路发现层、迁移表、`--apply` 三条规则与四道验收）。
+`config-audit`（四路发现层、迁移表、`--apply` 三条规则与四道验收）、
+`doctor`（TUN 路由判读：`_tun_route_state` 三处共用）。
+
+**TUN 路由的判据是两半都要**：上半 `128.0/1`，下半 `0/1` 或 sing-tun v0.9 起的七段
+`1/8 2/7 4/6 8/5 16/4 32/3 64/2`（避开 `0.0.0.0/8`）。只认 `0/1` 会把真机形状误报成「未接管」，
+只认 `128.0/1` 会把「只有上半」这种真故障判成健康。假 `netstat` 桩默认吐七段形状。
 
 `tests/run.sh` 给每个测试文件一把独立的锁（`SB_LOCKDIR`，`mktemp -d` 下）；`singbox.sh` 的
 `LOCKDIR` 默认 `/tmp/.singbox-sh.lock`，只在测试里用这个变量改。以前测试与 live 的 `singbox`

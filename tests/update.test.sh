@@ -135,7 +135,7 @@ JSON
   unset SB_FAKE_BAD_SHA SB_FAKE_NO_DIGEST
   unset SB_FAKE_CHECK_FAIL SB_FAKE_RUN_FAIL SB_FAKE_START_FAIL \
         SB_FAKE_SANDBOX_SOCKS_FAIL SB_FAKE_VERIFY_FAIL SB_FAKE_NO_TUN \
-        SB_FAKE_PROBE_FAIL SB_FAKE_DEPRECATED SB_FAKE_TUN_HOST_ONLY \
+        SB_FAKE_PROBE_FAIL SB_FAKE_DEPRECATED SB_FAKE_TUN_HOST_ONLY SB_FAKE_TUN_UPPER_ONLY \
         SB_FAKE_DIG_FAIL SB_FAKE_NO_GW SB_FAKE_PING_FAIL SB_FAKE_CN_FAIL
 }
 
@@ -282,6 +282,18 @@ if [ "$CODE" != 0 ] && [ "$(bin_version "$(BIN)")" = "$OLD" ]; then
   ok "TUN 只剩主机路由：判为不健康并回滚"
 else
   ng "TUN 只剩主机路由：期望非 0 且回到 ${OLD}（退出 ${CODE}，实际 $(bin_version "$(BIN)")）"
+fi
+
+#-- 12b. TUN 只接管了上半（128.0/1 在、下半七段缺席）：一半地址裸奔，必须回滚 ----
+# 真机 2026-09-10 的排查里就是这个形状让人以为 TUN 没接管——上半在、下半看不到 0/1。
+# 真机其实是七段拆分（见假 netstat 头注），但「只有上半」这个形状本身是真故障：
+# 1.0.0.0–127.255.255.255 全从 en0 直连。健康检查只认 128.0/1 会把它判成健康。
+setup
+SB_FAKE_TUN_UPPER_ONLY=1 sb update
+if [ "$CODE" != 0 ] && [ "$(bin_version "$(BIN)")" = "$OLD" ] && grep -q '一半' "$LOG"; then
+  ok "TUN 只接管上半：判为不健康（点名「一半」）并回滚"
+else
+  ng "TUN 只接管上半：期望非 0、点名「一半」且回到 ${OLD}（退出 ${CODE}，实际 $(bin_version "$(BIN)")）"
 fi
 
 #-- 10. rollback 无 .prev ----------------------------------------------
