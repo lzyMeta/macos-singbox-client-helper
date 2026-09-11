@@ -335,6 +335,9 @@
         "external_ui_download_detour": {
           "type": "string",
           "x-tag-reference": "outbound"
+        },
+        "secret": {
+          "type": "string"
         }
       },
       "additionalProperties": false

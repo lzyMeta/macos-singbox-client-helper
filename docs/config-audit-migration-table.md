@@ -350,7 +350,8 @@ for i in 1 2 3 4 5; do ./tests/run.sh >/dev/null 2>&1 || echo "第 $i 次红"; d
   `download_detour` 也无 `strategy` 的章节。表里这两条链接分别指向 rule-set 配置页的 `http_client` 小节和
   DNS rule action 页的 `strategy` 小节，`note` 里注明。
 - `config/config.example.json` 里还有 21 条 `download_detour`（模板没跟着 live 迁）。本文只让它加 `$schema`，
-  没动——另立项。
+  没动——2026-09-11 已同步：模板改成 live 的形状（`sing-box format` 后由 `--apply` 原位 wrap），
+  `tests/template.test.sh` 守住它过 audit、且与 live 逐键全等。
 - `tests/fixtures/migration-anchors.txt` 在 U0 提交前就已生成，被一起带进了 `fd32969`。
 - review（verifier）抓到合并逻辑两处：表外的 A/D 路发现都以路径 `-` 进合并、互相吞掉（改为无路径的行以原文为去重键）；
   `unknown field X` 在 B 路同键之前处理、贴不上去、报成两行两档（改为 B 路先于 A 路处理）。均已补断言修复。

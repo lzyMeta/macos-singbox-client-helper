@@ -9,14 +9,14 @@
       {
         "type": "https",
         "tag": "dns-remote",
-        "server": "1.1.1.1",
-        "detour": "vpstrans"
+        "detour": "vpstrans",
+        "server": "1.1.1.1"
       },
       {
         "type": "https",
         "tag": "dns-direct",
-        "server": "223.5.5.5",
-        "detour": "direct"
+        "detour": "direct",
+        "server": "223.5.5.5"
       }
     ],
     "rules": [
@@ -29,9 +29,7 @@
         "rcode": "NOERROR"
       },
       {
-        "rule_set": [
-          "geosite-category-ads-all"
-        ],
+        "rule_set": "geosite-category-ads-all",
         "action": "predefined",
         "rcode": "NXDOMAIN"
       },
@@ -45,20 +43,16 @@
       }
     ],
     "final": "dns-remote",
-    "strategy": "ipv4_only",
-    "disable_expire": false
+    "strategy": "ipv4_only"
   },
   "inbounds": [
     {
       "type": "tun",
       "tag": "tun-in",
-      "interface_name": "utun233",
-      "address": [
-        "172.19.0.1/30"
-      ],
+      "interface_name": "utun9527",
       "mtu": 9000,
+      "address": "172.18.0.1/30",
       "auto_route": true,
-      "strict_route": false,
       "stack": "gvisor"
     },
     {
@@ -72,15 +66,14 @@
     {
       "type": "vless",
       "tag": "vpstrans",
+      "domain_resolver": {
+        "server": "dns-direct",
+        "strategy": "ipv4_only"
+      },
       "server": "YOUR_VPSTRANS_ADDR",
       "server_port": 443,
       "uuid": "YOUR_UUID_VPSTRANS",
       "flow": "xtls-rprx-vision",
-      "packet_encoding": "xudp",
-      "domain_resolver": {
-        "server": "dns-direct",
-        "strategy": "ipv4_only"
-      },
       "tls": {
         "enabled": true,
         "server_name": "YOUR_SNI",
@@ -93,20 +86,20 @@
           "public_key": "YOUR_PUBLIC_KEY",
           "short_id": "YOUR_SHORT_ID"
         }
-      }
+      },
+      "packet_encoding": "xudp"
     },
     {
       "type": "vless",
       "tag": "vpsre",
-      "server": "YOUR_VPSTRANS_ADDR",
-      "server_port": 443,
-      "uuid": "YOUR_UUID_VPSRE",
-      "flow": "xtls-rprx-vision",
-      "packet_encoding": "xudp",
       "domain_resolver": {
         "server": "dns-direct",
         "strategy": "ipv4_only"
       },
+      "server": "YOUR_VPSTRANS_ADDR",
+      "server_port": 443,
+      "uuid": "YOUR_UUID_VPSRE",
+      "flow": "xtls-rprx-vision",
       "tls": {
         "enabled": true,
         "server_name": "YOUR_SNI",
@@ -119,7 +112,8 @@
           "public_key": "YOUR_PUBLIC_KEY",
           "short_id": "YOUR_SHORT_ID"
         }
-      }
+      },
+      "packet_encoding": "xudp"
     },
     {
       "type": "direct",
@@ -131,12 +125,6 @@
     }
   ],
   "route": {
-    "auto_detect_interface": true,
-    "default_domain_resolver": {
-      "server": "dns-direct",
-      "strategy": "ipv4_only"
-    },
-    "final": "vpstrans",
     "rules": [
       {
         "action": "sniff"
@@ -161,9 +149,7 @@
         "outbound": "direct"
       },
       {
-        "rule_set": [
-          "geosite-private"
-        ],
+        "rule_set": "geosite-private",
         "outbound": "direct"
       },
       {
@@ -172,9 +158,7 @@
         "action": "reject"
       },
       {
-        "rule_set": [
-          "geosite-category-ads-all"
-        ],
+        "rule_set": "geosite-category-ads-all",
         "action": "reject"
       },
       {
@@ -195,11 +179,11 @@
       },
       {
         "domain_suffix": [
+          "ipinfo.io",
           "ttcdn-us.com",
           "ttlivecdn.com",
           "ttoverseaus.net",
-          "ttwstatic.com",
-          "ipinfo.io"
+          "ttwstatic.com"
         ],
         "outbound": "vpsre"
       },
@@ -215,9 +199,7 @@
         "outbound": "vpsre"
       },
       {
-        "rule_set": [
-          "geoip-telegram"
-        ],
+        "rule_set": "geoip-telegram",
         "outbound": "vpsre"
       },
       {
@@ -246,182 +228,208 @@
       {
         "type": "remote",
         "tag": "geosite-private",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/private.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-category-ads-all",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/category-ads-all.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-anthropic",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/anthropic.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-openai",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/openai.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-category-ai-!cn",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/category-ai-!cn.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-github",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/github.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-google",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/google.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-bing",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/bing.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-tiktok",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/tiktok.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-telegram",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/telegram.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-meta",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/meta.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-x",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/x.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-discord",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/discord.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-whatsapp",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/whatsapp.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geoip-telegram",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geoip/telegram.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-apple-cn",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/apple@cn.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-microsoft-cn",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/microsoft@cn.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-gfw",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/gfw.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-geolocation-!cn",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/geolocation-!cn.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-cn",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/cn.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geoip-cn",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geoip/cn.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       }
-    ]
+    ],
+    "final": "vpstrans",
+    "auto_detect_interface": true,
+    "default_domain_resolver": {
+      "server": "dns-direct",
+      "strategy": "ipv4_only"
+    }
   },
   "experimental": {
     "cache_file": {
       "enabled": true,
-      "path": "/usr/local/etc/sing-box/cache.db",
-      "store_fakeip": false
+      "path": "/usr/local/etc/sing-box/cache.db"
     },
     "clash_api": {
       "external_controller": "127.0.0.1:9090",
-      "external_ui": "ui",
+      "external_ui": "monitor",
       "external_ui_download_url": "https://github.com/MetaCubeX/metacubexd/archive/refs/heads/gh-pages.zip",
       "external_ui_download_detour": "vpstrans",
       "secret": "YOUR_CLASH_SECRET"
