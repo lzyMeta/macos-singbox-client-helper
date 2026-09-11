@@ -13,7 +13,8 @@
 #      （提示档允许——那是语义定性，不是合法性）。
 #   2. 有 live 配置就比、没有就跳过：模板与 live 逐键比对——键路径、键顺序、非占位符的值
 #      三样全等；占位符（值以 YOUR_ 开头）只要求 live 那边已填。$schema 是模板专属
-#      （编辑器补全用，见 docs/best-practices.md），是唯一允许的差异。
+#      （编辑器补全用，见 docs/best-practices.md）。另有 3 条路径**允许值不同**（类型仍须
+#      一致）：tun 网卡名、tun 地址、clash_api.external_ui——模板留通用值，live 是各机各配。
 #      ⚠️ 这一道**只打印路径、不打印任何值**：live 里是真凭据。
 #
 set -uo pipefail
@@ -91,6 +92,8 @@ else
 import json, sys
 tpl = json.load(open(sys.argv[1])); live = json.load(open(sys.argv[2]))
 bad = []
+# 允许值不同的路径（键、类型仍要一致）：模板留通用值，live 是各机各配
+LOCAL = {"inbounds[0].interface_name", "inbounds[0].address", "experimental.clash_api.external_ui"}
 def walk(a, b, p):
     if isinstance(a, str) and a.startswith("YOUR_"):
         if not (isinstance(b, str) and b and not b.startswith("YOUR_")):
@@ -112,7 +115,7 @@ def walk(a, b, p):
         if len(a) != len(b):
             bad.append(f"长度不同    {p}  模板 {len(a)} / live {len(b)}")
         for i, (x, y) in enumerate(zip(a, b)): walk(x, y, f"{p}[{i}]")
-    elif a != b:
+    elif a != b and p not in LOCAL:
         bad.append(f"值不同      {p}")
 walk(tpl, live, "")
 print("\n".join(bad))
