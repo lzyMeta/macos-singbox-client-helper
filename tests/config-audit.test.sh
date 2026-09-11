@@ -538,6 +538,181 @@ for i in 1 2; do
 done
 if [ -n "$saved_lockdir" ]; then export SB_LOCKDIR="$saved_lockdir"; else unset SB_LOCKDIR; fi
 
+#=============================================================================
+# 迁移表（C 路）、去重、notice、covers —— docs/config-audit-migration-table.md
+#=============================================================================
+echo "验证 config audit 的迁移表档"
+
+# 报告里点名某条发现：形如 "[<tier>/<sources>] <path>"。sources 用 + 连接。
+# 这里用固定串而不是正则：路径里的 [ ] . 都是正则元字符。
+hit() { grep -F -- "$1" "$LOG" >/dev/null; }
+
+#-- T1. 隐式 HTTP client：check / schema 都看不见，只有表能报 -----------------
+setup
+audit --config "$FIX/bad-implicit-http-client.json"
+ran "隐式 HTTP client"
+if [ "$CODE" = 2 ]; then ok "隐式 HTTP client：退出 2"; else ng "隐式 HTTP client：期望 2，实际 $CODE"; fi
+if hit 'table] route.rule_set[0]' ; then
+  ok "隐式 HTTP client：点名 route.rule_set[0]，来源 table"
+else
+  ng "隐式 HTTP client：没点名 route.rule_set[0]（来源 table）"
+fi
+if hit 'route.rule_set[1]'; then
+  ng "隐式 HTTP client：rule_set[1] 显式给了 http_client，却被点名了"
+else
+  ok "隐式 HTTP client：显式 http_client 的 rule_set[1] 没被点名"
+fi
+setup
+audit --config "$FIX/good-explicit-http-clients.json"
+ran "显式 http_clients"
+if [ "$CODE" = 0 ] && ! inlog 'HTTP client'; then
+  ok "顶层 http_clients 非空：隐式 client 一条不报，退 0（manager.go:42-44）"
+else
+  ng "顶层 http_clients 非空：仍报了隐式 client 或退出码 ${CODE} ≠ 0"
+fi
+
+#-- T2. 遗留地址过滤：键合法但用法废弃，match_response 开了的不许报 ------------
+setup
+audit --config "$FIX/bad-legacy-address-filter.json"
+ran "遗留地址过滤"
+if [ "$CODE" = 2 ]; then ok "遗留地址过滤：退出 2"; else ng "遗留地址过滤：期望 2，实际 $CODE"; fi
+if hit 'deprecated/table] dns.rules[0]'; then
+  ok "遗留地址过滤：点名无 match_response 的 dns.rules[0]"
+else
+  ng "遗留地址过滤：没点名 dns.rules[0]"
+fi
+if grep -F -- '] dns.rules[1]' "$LOG" | grep -v notice >/dev/null; then
+  ng "遗留地址过滤：带 match_response: true 的 dns.rules[1] 被当成废弃用法点名了"
+else
+  ok "遗留地址过滤：match_response: true 的 dns.rules[1] 没被点名"
+fi
+# T12. 片段：两条都带 query_type，evaluate 那条的 server 是原规则的 dns-direct 而不是 dns.final
+if inlog '建议写法' && [ "$(grep -c '"query_type"' "$LOG")" -ge 2 ]; then
+  ok "地址过滤片段：打了「建议写法」且两条都限定 query_type"
+else
+  ng "地址过滤片段：缺「建议写法」或 query_type 不足两条（$(grep -c '"query_type"' "$LOG") 条）"
+fi
+if grep -F '"action": "evaluate"' "$LOG" | grep -F '"server": "dns-direct"' >/dev/null; then
+  ok "地址过滤片段：evaluate 的 server 等于原规则的 dns-direct"
+else
+  ng "地址过滤片段：evaluate 的 server 不是原规则的 server（不许换成 dns.final）"
+fi
+if grep -F '"action": "evaluate"' "$LOG" | grep -F '"rewrite_ttl": 60' >/dev/null; then
+  ok "地址过滤片段：原规则的 rewrite_ttl 搬到了 evaluate 那条"
+else
+  ng "地址过滤片段：rewrite_ttl 没搬到 evaluate 那条"
+fi
+
+#-- T3. store_rdrc：check / schema / table 三路全中，输出必须是一行 -------------
+setup
+audit --config "$FIX/bad-store-rdrc.json"
+ran "store_rdrc"
+n=$(grep -c 'experimental.cache_file.store_rdrc' "$LOG")
+if [ "$n" = 1 ]; then
+  ok "store_rdrc：三路命中合并成一行"
+else
+  ng "store_rdrc：期望一行，实际 ${n} 行（去重没做）"
+fi
+if hit 'deprecated/check+schema+table] experimental.cache_file.store_rdrc'; then
+  ok "store_rdrc：来源栏 check+schema+table"
+else
+  ng "store_rdrc：来源栏不是 check+schema+table"
+fi
+if inlog 'migration/#migrate-store_rdrc'; then
+  ok "store_rdrc：链接以表为准（check 档自带的假锚点被覆盖）"
+else
+  ng "store_rdrc：链接没有以表为准"
+fi
+
+#-- T4（前半）. Hysteria v1 调优字段：schema+table 能抓，run 不在来源里 ---------
+setup
+audit --config "$FIX/bad-hysteria-tuning.json"
+ran "Hysteria 调优字段"
+if [ "$CODE" = 2 ]; then ok "Hysteria 调优字段：退出 2"; else ng "Hysteria 调优字段：期望 2，实际 $CODE"; fi
+if hit 'schema+table] outbounds[2].recv_window_conn' && hit 'schema+table] outbounds[2].disable_mtu_discovery'; then
+  ok "Hysteria 调优字段：两处都点名，来源 schema+table"
+else
+  ng "Hysteria 调优字段：没有以 schema+table 点名两处"
+fi
+if grep -F 'outbounds[2]' "$LOG" | grep -q 'run'; then
+  ng "Hysteria 调优字段：来源里出现了 run（内核对它不告警）"
+else
+  ok "Hysteria 调优字段：来源不含 run"
+fi
+if inlog '内核不会告警'; then ok "Hysteria 调优字段：说明了内核不会告警"; else ng "Hysteria 调优字段：缺「内核不会告警」说明"; fi
+
+#-- T5. notice：只命中行为变更，退 0，带官方链接 -------------------------------
+setup
+audit --config "$FIX/notice-query-type.json"
+ran "notice"
+if [ "$CODE" = 0 ]; then ok "notice：退出 0（不影响退出码）"; else ng "notice：期望 0，实际 $CODE"; fi
+if hit 'notice/table] dns.rules[0]'; then ok "notice：点名 dns.rules[0]"; else ng "notice：没点名 dns.rules[0]"; fi
+if inlog 'migration/#ip_version-and-query_type-behavior-changes-in-dns-rules'; then
+  ok "notice：带官方链接"
+else
+  ng "notice：缺官方链接"
+fi
+
+#-- T6. covers：内核 minor 高于表就提示一行，退出码不变 --------------------------
+setup 1.15.3
+audit --config "$FIX/good-http-client.json"
+ran "covers 1.15.3"
+if inlog '迁移表只覆盖到 1.14.0' && [ "$CODE" = 0 ]; then
+  ok "covers：内核 1.15.3 时提示「迁移表只覆盖到 1.14.0」，退出码仍 0"
+else
+  ng "covers：内核 1.15.3 时没提示，或退出码 ${CODE} ≠ 0"
+fi
+setup 1.14.9
+audit --config "$FIX/good-http-client.json"
+ran "covers 1.14.9"
+if inlog '迁移表只覆盖到'; then
+  ng "covers：内核 1.14.9 也提示了（该按 minor 比）"
+else
+  ok "covers：内核 1.14.9 不提示"
+fi
+
+#-- T11. strategy：ipv4_only 给片段，prefer_* 不给 ------------------------------
+setup
+audit --config "$FIX/bad-dns-strategy.json"
+ran "strategy ipv4_only"
+if [ "$CODE" = 2 ] && hit 'schema+table] dns.rules[0].strategy'; then
+  ok "strategy：schema+table 点名 dns.rules[0].strategy，退 2"
+else
+  ng "strategy：没以 schema+table 点名（退 ${CODE}）"
+fi
+if inlog '建议写法' && grep -F '"query_type": ["AAAA"]' "$LOG" >/dev/null; then
+  ok "strategy ipv4_only：片段含 query_type: [\"AAAA\"]"
+else
+  ng "strategy ipv4_only：缺片段或片段没限定 AAAA"
+fi
+if inlog '无 migration 章节'; then ok "strategy：注明了 v1.14.0 无 migration 章节"; else ng "strategy：没注明死链"; fi
+setup
+audit --config "$FIX/bad-dns-strategy-prefer.json"
+ran "strategy prefer_ipv4"
+if [ "$CODE" = 2 ] && ! inlog '建议写法' && inlog '删掉即可'; then
+  ok "strategy prefer_ipv4：不给片段，只说删掉即可"
+else
+  ng "strategy prefer_ipv4：给了片段，或没说「删掉即可」（退 ${CODE}）"
+fi
+
+#-- T13. 表里的 migration/# 锚点必须在 v1.14.0 的清单里 --------------------------
+# 直接查脚本源码：表就内置在里面。清单来自 tag v1.14.0 的 docs/migration.md（见 fixture 头注）。
+n_anchor=$(grep -o 'sagernet\.org/migration/#[A-Za-z0-9_-]*' "$SB" | sort -u | wc -l | tr -d ' ')
+if [ "$n_anchor" -ge 6 ]; then
+  ok "迁移链接：源码里能抓到 ${n_anchor} 个 migration/# 锚点（链接是整段字面量）"
+else
+  ng "迁移链接：只抓到 ${n_anchor} 个锚点 —— 链接被拆成字符串拼接了？下一条断言会恒绿"
+fi
+bad_anchor=""
+for a in $(grep -o 'sagernet\.org/migration/#[A-Za-z0-9_-]*' "$SB" | sed 's|.*#||' | sort -u); do
+  grep -qx "$a" "$FIX/migration-anchors.txt" || bad_anchor="$bad_anchor $a"
+done
+if [ -z "$bad_anchor" ]; then
+  ok "迁移链接：所有 migration/# 锚点都在 v1.14.0 清单内"
+else
+  ng "迁移链接：清单外的锚点（死链）：${bad_anchor}"
+fi
+
 echo
 printf '通过 %d，失败 %d\n' "$pass" "$fail"
 [ "$fail" = 0 ]

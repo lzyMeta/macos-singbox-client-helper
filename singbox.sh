@@ -1794,12 +1794,12 @@ except Exception: print("")' 2>/dev/null)
     # 阶段 3 读的正是这个退出码。
     info "配置现代性：这次没审成（读不到 ${CFG}，或内核跑不起来），跳过"
   else
-  local n_audit; n_audit=$(wc -l <"$audit_rows" | tr -d ' ')
+  local n_audit; n_audit=$(awk -F'\t' '$1=="removed"||$1=="deprecated"{n++} END{print n+0}' "$audit_rows")
   if [ "${n_audit:-0}" = 0 ]; then
     ok "配置里没有废弃字段，也没有未知键"
   else
     vpbad "配置里有 ${n_audit} 处废弃/未知字段 —— 跑 $(basename "$0") config audit"
-    sed 's/^/        /' "$audit_rows" | cut -c1-160 >&2
+    grep -v '^notice' "$audit_rows" | cut -f1-4 | sed 's/^/        /' | cut -c1-160 >&2
   fi
   fi
 
@@ -2044,6 +2044,347 @@ cmd_edit() {
 # 仍然有效的字段。所以 schema 档走结构化键路径比对：按 type 的 const 选定 oneOf
 # 分支，再对该分支的 properties 求键差。
 
+# 迁移表覆盖到的内核 minor。内核比它新时 config audit 提示一行「表可能漏项」，退出码不受影响。
+# 表（_cfg_pylib 里的 TABLE）加了新 minor 的条目时一并改这里。
+CFG_TABLE_COVERS=1.14.0
+
+# _cfg_pylib —— 迁移表 + 路径谓词 + 片段生成，_cfg_audit / _cfg_migrate / _cfg_whitelist_diff /
+# _cfg_apply 四处内联 python 共用。<<'PY' 不展开，表是纯 python 字面量，consumer 用
+# exec(open(sys.argv[1]).read()) 载入。表的维护方法见 docs/script-usage.md「迁移表怎么维护」。
+_cfg_pylib() {
+  cat <<'PY'
+import json, re, sys
+
+# ---- 迁移表 -------------------------------------------------------------------
+# 所有条目钉在 sing-box **v1.14.0** git tag：docs/deprecated.md、docs/migration.md、
+# docs/changelog.md、experimental/deprecated/constants.go、option/*.go 的 schema:"omit"。
+# 网站是活的（首页已是 1.15.0-alpha），内核是死的——只按 tag 核对，网站只做人工旁证。
+# 维护：内核出新 minor 时按 docs/script-usage.md「迁移表怎么维护」更新条目，并改 bash 侧的
+# CFG_TABLE_COVERS。链接一律写整段字面量，不拼接——tests 里的锚点核对是 grep 源码做的。
+
+# 每条：id / match（key：JSON 路径模式；usage：具名谓词）/ deprecated_in / removed_in /
+# tier（deprecated | notice）/ stage（new：内核在 New() 阶段告警，check 能抓；start：只有
+# 实跑到 Start() 才告警，只有 run 档能抓；none：内核永远不告警）/ warn（把 check / run 档
+# 的 WARN 原文对回本条的正则）/ link（核对过 v1.14.0 docs/ 的链接）/ note / fix（auto：
+# --apply 落地；snippet：只出片段；report：只报）/ rewrite（auto 条目的改写规则）。
+TABLE = [
+    # ---- 1.14.0 ----
+    {"id": "download_detour", "match": {"kind": "key", "paths": ["route.rule_set[type=remote].download_detour"]},
+     "deprecated_in": "1.14.0", "removed_in": "1.16.0", "tier": "deprecated", "stage": "start",
+     "warn": r"download_detour", "fix": "auto",
+     "rewrite": {"op": "wrap", "new_key": "http_client", "wrap_key": "detour"},
+     "link": "https://sing-box.sagernet.org/configuration/rule-set/#http_client",
+     "note": "1.14.0 起废弃，应改为内联 http_client: {\"detour\": X}；1.16.0 移除。"
+             "v1.14.0 的 migration.md 没有这一条的章节（deprecated 页的 Migration 链接误指 ACME 一节），链接给的是 rule-set 配置页"},
+    {"id": "implicit_http_client", "match": {"kind": "usage", "name": "implicit_http_client"},
+     "deprecated_in": "1.14.0", "removed_in": "1.16.0", "tier": "deprecated", "stage": "start",
+     "warn": r"implicit default HTTP client", "fix": "report",
+     "link": "https://sing-box.sagernet.org/configuration/rule-set/#http_client",
+     "note": "远程规则集既无 http_client 也无 download_detour，顶层 http_clients 与 route.default_http_client 又都空 —— "
+             "1.14.0 起用「默认出站」下载规则集是废弃行为（common/httpclient/manager.go:41-44,76-80）。"
+             "给这条规则集写内联 http_client: {\"detour\": ...}；不建议引入 default_http_client（全局副作用）"},
+    {"id": "inline_acme", "match": {"kind": "key", "paths": ["inbounds[].tls.acme"]},
+     "deprecated_in": "1.14.0", "removed_in": "1.16.0", "tier": "deprecated", "stage": "new",
+     "warn": r"inline ACME", "fix": "report",
+     "link": "https://sing-box.sagernet.org/migration/#migrate-inline-acme-to-certificate-provider",
+     "note": "TLS 内联 ACME 选项 1.14.0 废弃，改用 certificate_providers + tls.certificate_provider；1.16.0 移除"},
+    {"id": "dns_rule_strategy", "match": {"kind": "key", "paths": ["dns.rules[**].strategy"]},
+     "deprecated_in": "1.14.0", "removed_in": "1.16.0", "tier": "deprecated", "stage": "start",
+     "warn": r"`strategy` DNS rule action", "fix": "snippet",
+     "link": "https://sing-box.sagernet.org/configuration/dns/rule_action/#strategy",
+     "note": "DNS 规则动作的 strategy 1.14.0 废弃，1.16.0 移除。v1.14.0 的 migration.md 无 migration 章节，"
+             "内核 WARN 给的 #migrate-dns-rule-action-strategy-to-rule-items 是死链；链接给的是 rule action 页的 strategy 小节"},
+    {"id": "accept_empty", "match": {"kind": "key", "paths": ["dns.rules[**].rule_set_ip_cidr_accept_empty"]},
+     "deprecated_in": "1.14.0", "removed_in": "1.16.0", "tier": "deprecated", "stage": "new",
+     "warn": r"rule_set_ip_cidr_accept_empty", "fix": "report",
+     "link": "https://sing-box.sagernet.org/migration/#migrate-address-filter-fields-to-response-matching",
+     "note": "rule_set_ip_cidr_accept_empty 1.14.0 废弃，随地址过滤一起改为 evaluate + match_response；1.16.0 移除"},
+    {"id": "legacy_address_filter", "match": {"kind": "usage", "name": "legacy_address_filter"},
+     "deprecated_in": "1.14.0", "removed_in": "1.16.0", "tier": "deprecated", "stage": "start",
+     "warn": r"Legacy Address Filter Fields", "fix": "snippet",
+     "link": "https://sing-box.sagernet.org/migration/#migrate-address-filter-fields-to-response-matching",
+     "note": "DNS 规则带 ip_cidr / ip_is_private / ip_accept_any 却没开 match_response —— 键合法、用法废弃（1.14.0），"
+             "1.16.0 起拒绝。改为 evaluate 取响应 + match_response 匹配"},
+    {"id": "legacy_address_filter_rs", "match": {"kind": "usage", "name": "legacy_address_filter_rs"},
+     "deprecated_in": "1.14.0", "removed_in": "1.16.0", "tier": "notice", "stage": "start",
+     "warn": None, "fix": "report",
+     "link": "https://sing-box.sagernet.org/migration/#migrate-address-filter-fields-to-response-matching",
+     "note": "DNS 规则引用了规则集但没开 match_response：若该规则集含 ip_cidr 条目（如 geoip），这就是废弃的地址过滤用法。"
+             "离线看不到规则集内容（dns/router.go:1631-1638 靠规则集元数据判），用 --deep 定性"},
+    {"id": "independent_cache", "match": {"kind": "key", "paths": ["dns.independent_cache"]},
+     "deprecated_in": "1.14.0", "removed_in": "1.16.0", "tier": "deprecated", "stage": "new",
+     "warn": r"independent_cache", "fix": "auto",
+     "rewrite": {"op": "delete"},
+     "link": "https://sing-box.sagernet.org/migration/#migrate-independent-dns-cache",
+     "note": "dns.independent_cache 1.14.0 废弃、1.16.0 移除；migration 原话「Simply remove the field」"},
+    {"id": "store_rdrc", "match": {"kind": "key", "paths": ["experimental.cache_file.store_rdrc"]},
+     "deprecated_in": "1.14.0", "removed_in": "1.16.0", "tier": "deprecated", "stage": "new",
+     "warn": r"store_rdrc", "fix": "auto",
+     "rewrite": {"op": "rename_if_true", "new_key": "store_dns"},
+     "link": "https://sing-box.sagernet.org/migration/#migrate-store_rdrc",
+     "note": "cache_file.store_rdrc 1.14.0 废弃、1.16.0 移除：值为 true 且没有 store_dns 时改名为 store_dns: true，否则删掉"},
+    {"id": "hysteria_v1_tuning", "match": {"kind": "key", "paths": [
+        "%s[type=hysteria].%s" % (side, f)
+        for side in ("outbounds", "inbounds")
+        for f in ("recv_window_conn", "recv_window", "recv_window_client", "max_conn_client", "disable_mtu_discovery")]},
+     "deprecated_in": "1.14.0", "removed_in": "1.16.0", "tier": "deprecated", "stage": "none",
+     "warn": None, "fix": "report",
+     "link": "https://sing-box.sagernet.org/changelog/#1140",
+     "note": "Hysteria v1 调优字段 1.14.0 废弃、1.16.0 移除，改用共享的 quic 参数（changelog 1.14.0 注 23）。"
+             "内核不会告警（option/hysteria.go 标 schema:\"omit\" 但 deprecated/constants.go 无对应 Note），deprecated 页也未列"},
+    {"id": "tun_removed_fields", "match": {"kind": "key", "paths": ["inbounds[type=tun].endpoint_independent_nat", "inbounds[type=tun].gso"]},
+     "deprecated_in": "1.11.0", "removed_in": "1.13.0", "tier": "deprecated", "stage": "none",
+     "warn": None, "fix": "report",
+     "link": "https://sing-box.sagernet.org/configuration/inbound/tun/",
+     "note": "源码标 Deprecated: removed，内核静默忽略、不会告警；tun 文档仍把 endpoint_independent_nat 列为有效字段。删掉即可"},
+    # 行为变更（notice）
+    {"id": "query_type_ip_version_semantics", "match": {"kind": "usage", "name": "query_type_or_ip_version"},
+     "deprecated_in": "1.14.0", "removed_in": None, "tier": "notice", "stage": "none",
+     "warn": None, "fix": "report",
+     "link": "https://sing-box.sagernet.org/migration/#ip_version-and-query_type-behavior-changes-in-dns-rules",
+     "note": "1.14.0 起 query_type / ip_version 也作用于内部解析（resolve 动作、direct 出站的 ICMP、endpoint 自身地址…），"
+             "且与遗留地址过滤 / strategy / rule_set_ip_cidr_accept_empty 不能共存于同一份 DNS 配置"},
+    # ---- 1.12.0 排期到 1.14.0、内核 1.14.0 仍在 Start() 阶段告警 ----
+    {"id": "dns_rule_outbound", "match": {"kind": "key", "paths": ["dns.rules[**].outbound"]},
+     "deprecated_in": "1.12.0", "removed_in": "1.14.0", "tier": "deprecated", "stage": "start",
+     "warn": r"`outbound` DNS rule", "fix": "report",
+     "link": "https://sing-box.sagernet.org/migration/#migrate-outbound-dns-rule-items-to-domain-resolver",
+     "note": "DNS 规则的 outbound 项 1.12.0 废弃，改用出站的 domain_resolver 拨号字段"},
+    {"id": "outbound_domain_strategy", "match": {"kind": "key", "paths": ["outbounds[].domain_strategy", "endpoints[].domain_strategy"]},
+     "deprecated_in": "1.12.0", "removed_in": "1.14.0", "tier": "deprecated", "stage": "start",
+     "warn": r"domain[ _]strategy", "fix": "report",
+     "link": "https://sing-box.sagernet.org/migration/#migrate-outbound-domain-strategy-option-to-domain-resolver",
+     "note": "出站拨号字段 domain_strategy 1.12.0 废弃，改为 domain_resolver: {\"server\": ..., \"strategy\": ...}"},
+    {"id": "missing_domain_resolver", "match": {"kind": "usage", "name": "missing_domain_resolver"},
+     "deprecated_in": "1.12.0", "removed_in": "1.14.0", "tier": "deprecated", "stage": "start",
+     "warn": r"missing domain resolver|domain_resolver", "fix": "report",
+     "link": "https://sing-box.sagernet.org/migration/#migrate-outbound-domain-strategy-option-to-domain-resolver",
+     "note": "出站 server 是域名却既没有 domain_resolver、route 也没有 default_domain_resolver —— 1.12.0 起靠隐式默认解析是废弃行为"},
+    # ---- 1.10–1.13 已被内核拒绝的：进表只为给链接与解释，removed 的定性来自 check 档的 FATAL ----
+    {"id": "legacy_dns_servers", "match": {"kind": "key", "paths": ["dns.servers[].address"]},
+     "deprecated_in": "1.12.0", "removed_in": "1.14.0", "tier": "deprecated", "stage": "new",
+     "warn": r"legacy DNS server", "fix": "report",
+     "link": "https://sing-box.sagernet.org/migration/#migrate-to-new-dns-server-formats",
+     "note": "旧式 DNS 服务器（address 字段）1.12.0 废弃、1.14.0 移除，改为 type + server 的新格式"},
+    {"id": "legacy_special_outbounds", "match": {"kind": "key", "paths": ["outbounds[type=block]", "outbounds[type=dns]"]},
+     "deprecated_in": "1.11.0", "removed_in": "1.13.0", "tier": "deprecated", "stage": "new",
+     "warn": r"legacy special outbound", "fix": "report",
+     "link": "https://sing-box.sagernet.org/migration/#migrate-legacy-special-outbounds-to-rule-actions",
+     "note": "block / dns 特殊出站 1.11.0 废弃，改用规则动作 reject / hijack-dns"},
+    {"id": "legacy_inbound_fields", "match": {"kind": "key", "paths": [
+        "inbounds[].sniff", "inbounds[].sniff_override_destination", "inbounds[].sniff_timeout", "inbounds[].domain_strategy", "inbounds[].udp_disable_domain_unmapping"]},
+     "deprecated_in": "1.11.0", "removed_in": "1.13.0", "tier": "deprecated", "stage": "new",
+     "warn": r"legacy inbound fields", "fix": "report",
+     "link": "https://sing-box.sagernet.org/migration/#migrate-legacy-inbound-fields-to-rule-actions",
+     "note": "入站上的 sniff / domain_strategy 等字段 1.11.0 废弃，改用路由规则动作 sniff / resolve"},
+    {"id": "destination_override", "match": {"kind": "key", "paths": ["outbounds[type=direct].override_address", "outbounds[type=direct].override_port"]},
+     "deprecated_in": "1.11.0", "removed_in": "1.13.0", "tier": "deprecated", "stage": "new",
+     "warn": r"override_address|override_port|destination override", "fix": "report",
+     "link": "https://sing-box.sagernet.org/migration/#migrate-destination-override-fields-to-route-options",
+     "note": "direct 出站的 override_address / override_port 1.11.0 废弃，改用 route 动作的同名选项"},
+    {"id": "wireguard_outbound", "match": {"kind": "key", "paths": ["outbounds[type=wireguard]"]},
+     "deprecated_in": "1.11.0", "removed_in": "1.13.0", "tier": "deprecated", "stage": "new",
+     "warn": r"WireGuard outbound", "fix": "report",
+     "link": "https://sing-box.sagernet.org/migration/#migrate-wireguard-outbound-to-endpoint",
+     "note": "WireGuard 出站 1.11.0 废弃，改为 endpoints[] 里的 wireguard 端点"},
+    {"id": "tun_address_fields", "match": {"kind": "key", "paths": [
+        "inbounds[type=tun].%s" % f for f in ("inet4_address", "inet6_address", "inet4_route_address", "inet6_route_address",
+                                              "inet4_route_exclude_address", "inet6_route_exclude_address")]},
+     "deprecated_in": "1.10.0", "removed_in": "1.12.0", "tier": "deprecated", "stage": "new",
+     "warn": r"legacy tun address fields", "fix": "report",
+     "link": "https://sing-box.sagernet.org/migration/#tun-address-fields-are-merged",
+     "note": "tun 的 inet4_*/inet6_* 地址字段 1.10.0 合并为 address / route_address / route_exclude_address，1.12.0 移除"},
+    {"id": "ipcidr_match_source", "match": {"kind": "key", "paths": ["dns.rules[**].rule_set_ipcidr_match_source", "route.rules[**].rule_set_ipcidr_match_source"]},
+     "deprecated_in": "1.10.0", "removed_in": "1.11.0", "tier": "deprecated", "stage": "new",
+     "warn": r"rule_set_ipcidr_match_source", "fix": "report",
+     "link": "https://sing-box.sagernet.org/deprecated/#match-source-rule-items-are-renamed",
+     "note": "rule_set_ipcidr_match_source 1.10.0 改名为 rule_set_ip_cidr_match_source，1.11.0 移除"},
+]
+BY_ID = dict((e["id"], e) for e in TABLE)
+
+
+# ---- 路径模式 ------------------------------------------------------------------
+# 语法：段用 . 连接；段可带 [] 任意下标、[k=v] 按子键筛、[**] 任意下标并递归进 logical
+# 子规则的 rules。以筛选段结尾的模式命中的是元素本身（outbounds[type=block]）。
+_SEG = re.compile(r"^([A-Za-z0-9_$]+)(?:\[(.*)\])?$")
+
+def _elems(lst, p, filt):
+    for idx, el in enumerate(lst):
+        elp = "%s[%d]" % (p, idx)
+        if filt == "**":
+            yield (elp, lst, idx, el)
+            if isinstance(el, dict) and isinstance(el.get("rules"), list):
+                for h in _elems(el["rules"], elp + ".rules", "**"):
+                    yield h
+        elif filt == "":
+            yield (elp, lst, idx, el)
+        else:
+            k, _, v = filt.partition("=")
+            if isinstance(el, dict) and str(el.get(k, "")) == v:
+                yield (elp, lst, idx, el)
+
+def find_paths(cfg, pattern):
+    """返回 [(path, container, key, value)]：container[key] 就是命中的值。"""
+    segs = pattern.split(".")
+    out = []
+    def rec(node, i, path):
+        m = _SEG.match(segs[i])
+        name, filt = m.group(1), m.group(2)
+        if not isinstance(node, dict) or name not in node:
+            return
+        val = node[name]
+        p = (path + "." + name) if path else name
+        last = i == len(segs) - 1
+        if filt is None:
+            if last:
+                out.append((p, node, name, val))
+            else:
+                rec(val, i + 1, p)
+        elif isinstance(val, list):
+            for (ep, c, k, el) in _elems(val, p, filt):
+                if last:
+                    out.append((ep, c, k, el))
+                else:
+                    rec(el, i + 1, ep)
+    rec(cfg, 0, "")
+    return out
+
+
+# ---- 具名谓词（用法条件：A / B 表达不了的那几条）-----------------------------
+ADDR_FIELDS = ("ip_cidr", "ip_is_private", "ip_accept_any")
+
+def _dns_rules(cfg):
+    rules = (cfg.get("dns") or {}).get("rules")
+    if not isinstance(rules, list):
+        return []
+    return [h for h in _elems(rules, "dns.rules", "**") if isinstance(h[3], dict)]
+
+def _is_ip(s):
+    try:
+        import ipaddress
+        ipaddress.ip_address(s)
+        return True
+    except Exception:
+        return False
+
+def u_implicit_http_client(cfg):
+    route = cfg.get("route") or {}
+    if cfg.get("http_clients") or route.get("default_http_client"):
+        return []
+    return [h for h in _elems(route.get("rule_set") or [], "route.rule_set", "type=remote")
+            if isinstance(h[3], dict) and "http_client" not in h[3] and "download_detour" not in h[3]]
+
+def u_legacy_address_filter(cfg):
+    return [h for h in _dns_rules(cfg)
+            if any(f in h[3] for f in ADDR_FIELDS) and not h[3].get("match_response")]
+
+def u_legacy_address_filter_rs(cfg):
+    return [h for h in _dns_rules(cfg)
+            if h[3].get("rule_set") and not h[3].get("match_response") and not any(f in h[3] for f in ADDR_FIELDS)]
+
+def u_query_type_or_ip_version(cfg):
+    return [h for h in _dns_rules(cfg) if "query_type" in h[3] or "ip_version" in h[3]]
+
+def u_missing_domain_resolver(cfg):
+    if (cfg.get("route") or {}).get("default_domain_resolver"):
+        return []
+    out = []
+    for h in _elems(cfg.get("outbounds") or [], "outbounds", ""):
+        el = h[3]
+        if isinstance(el, dict) and isinstance(el.get("server"), str) and el["server"] \
+                and not _is_ip(el["server"]) and "domain_resolver" not in el:
+            out.append(h)
+    return out
+
+USAGE = {
+    "implicit_http_client": u_implicit_http_client,
+    "legacy_address_filter": u_legacy_address_filter,
+    "legacy_address_filter_rs": u_legacy_address_filter_rs,
+    "query_type_or_ip_version": u_query_type_or_ip_version,
+    "missing_domain_resolver": u_missing_domain_resolver,
+}
+
+def table_hits(cfg, entry):
+    m = entry["match"]
+    if m["kind"] == "key":
+        out = []
+        for pat in m["paths"]:
+            out.extend(find_paths(cfg, pat))
+        return out
+    return USAGE[m["name"]](cfg)
+
+
+# ---- 片段（snippet 型条目）-------------------------------------------------------
+# 按 v1.14.0 源码语义推导，未经行为验证。不落地，报告里注明需人工核对。
+_RULE_ACTION_KEYS = ("action", "server", "strategy", "rewrite_ttl", "disable_cache", "client_subnet",
+                     "match_response", "rule_set_ip_cidr_accept_empty", "outbound")
+_CARRY = ("rewrite_ttl", "disable_cache", "client_subnet")
+QT = ["A", "AAAA", "HTTPS"]
+
+def snippet_address_filter(rule, path):
+    # dns/router.go:294-298：遗留规则对非地址查询整条跳过；地址查询用本条 server 查，
+    # 响应不匹配则继续下一条。等价新形式是两条，且两条都限定 query_type；
+    # evaluate 用**原规则的 server**（官方示例换成 remote evaluate 再 route 到 local，那换了决定服务器，不是等价改写）。
+    idx = re.findall(r"\[(\d+)\]", path)
+    tag = "mig-af-%s" % (idx[-1] if idx else "0")
+    cond = dict((k, v) for k, v in rule.items() if k not in ADDR_FIELDS and k not in _RULE_ACTION_KEYS)
+    ev = dict(cond)
+    ev["query_type"] = QT
+    ev["action"] = "evaluate"
+    if "server" in rule:
+        ev["server"] = rule["server"]
+    for k in _CARRY:
+        if k in rule:
+            ev[k] = rule[k]
+    ev["tag"] = tag
+    rs = dict(cond)
+    rs["query_type"] = QT
+    rs["match_response"] = tag
+    for k in ADDR_FIELDS:
+        if k in rule:
+            rs[k] = rule[k]
+    rs["action"] = "respond"
+    return "\n".join(json.dumps(x, ensure_ascii=False) for x in (ev, rs))
+
+def snippet_strategy(rule, path, value):
+    # dns/client.go:261-266,616-630：ipv4_only = AAAA 查询直接回空 NOERROR、HTTPS 应答剥掉 ipv6hint；
+    # ipv6_only 对称；prefer_* 只影响内部 Lookup 排序，对客户端查询无效果。
+    if value not in ("ipv4_only", "ipv6_only"):
+        return None
+    cond = dict((k, v) for k, v in rule.items() if k not in _RULE_ACTION_KEYS)
+    pre = dict(cond)
+    pre["query_type"] = ["AAAA" if value == "ipv4_only" else "A"]
+    pre["action"] = "predefined"
+    pre["rcode"] = "NOERROR"
+    return json.dumps(pre, ensure_ascii=False)
+
+def snippet_for(entry, hit):
+    """返回 (片段, 附加说明)。片段为 None 表示不给片段。"""
+    path, container, key, value = hit
+    if entry["id"] == "legacy_address_filter":
+        return ("在原规则位置替换为下面两条：\n" + snippet_address_filter(value, path), None)
+    if entry["id"] == "dns_rule_strategy":
+        rule = container if isinstance(container, dict) else {}
+        s = snippet_strategy(rule, path, value)
+        if s is None:
+            return (None, "prefer_* 只影响内部 Lookup 的排序，对客户端查询无效果：删掉即可")
+        return ("在原规则之前插入下面这条（HTTPS 应答的 ipv6hint/ipv4hint 剥离无等价写法，注明）：\n" + s
+                + "\n然后删掉原规则的 strategy", None)
+    return (None, None)
+
+
+# ---- 版本 ---------------------------------------------------------------------
+def ver_tuple(v):
+    out = []
+    for x in re.split(r"[.\-]", str(v or "")):
+        if x.isdigit():
+            out.append(int(x))
+        else:
+            break
+    return tuple(out + [0] * (3 - len(out)))[:3]
+PY
+}
+
 # 每条发现一行，TAB 分隔，供调用方自行渲染：
 #   <tier>\t<source>\t<json 路径>\t<说明>\t<官方迁移链接或空>
 # tier ∈ removed（对应退 1）/ deprecated（对应退 2）；source ∈ check / schema
@@ -2059,7 +2400,7 @@ cmd_edit() {
 # 这两件事必须分开：把「审不了」报成发现，就是把「配置已经坏了」这个结论强加给
 # 一次根本没做成的检查。
 _cfg_audit() {
-  local cfg="$1"
+  local cfg="$1" runlog="${2:-}"
   local chk rc
 
   # 前置闸门：内核得先能应答。$BIN 损坏、权限不对、根本没装的时候 check 同样
@@ -2075,6 +2416,10 @@ _cfg_audit() {
   [ -r "$cfg" ] || return 1
   chk=$("$BIN" check -c "$cfg" 2>&1); rc=$?
 
+  # A / B 两路的原始行先收进 $raw，最后由合并那段 python 按路径去重、合并来源，
+  # 再写 stdout。内核 < 1.14.0 时只有 A 路，原样吐出。
+  local raw; raw=$(mktmp)
+  {
   if [ "$rc" != 0 ]; then
     # 退非 0 有两种完全不同的含义，必须先分开：
     #   内核拒绝了配置        → 这是发现（tier=removed）
@@ -2109,19 +2454,22 @@ _cfg_audit() {
       printf 'deprecated\tcheck\t-\t%s\t%s\n' "$line" "$url"
     done
   fi
+  } >"$raw"
 
   #--- schema 档 --------------------------------------------------------
   # 内核 < 1.14.0 的 schema 是否同样剔除废弃字段，手上没有老内核可实测。闸门保守：
-  # 低于 1.14.0 就只信 check 档，不拿一个没验过的前提去报废弃。
+  # 低于 1.14.0 就只信 check 档，不拿一个没验过的前提去报废弃。迁移表同理：
+  # 表里的谓词全是按 1.14.0 源码写的，不往老内核上套。
   if ver_gt 1.14.0 "$kver"; then
+    cat "$raw"
     return 0
   fi
 
   local sch; sch=$(mktmp)
-  "$BIN" schema >"$sch" 2>/dev/null || return 0
-  [ -s "$sch" ] || return 0
+  # schema 拿不到就只跳过 B 路，C 路照跑：表是离线的，不依赖内核吐 schema。
+  "$BIN" schema >"$sch" 2>/dev/null || : >"$sch"
 
-  python3 - "$cfg" "$sch" <<'PY'
+  [ -s "$sch" ] && python3 - "$cfg" "$sch" <<'PY' >>"$raw"
 import json, sys
 
 cfg_path, schema_path = sys.argv[1], sys.argv[2]
@@ -2134,14 +2482,8 @@ except Exception:
 defs = sch.get("$defs", sch.get("definitions", {}))
 
 DEPRECATED_URL = "https://sing-box.sagernet.org/deprecated/"
-# 只收录有明确迁移路径、且本脚本实测过的键。表外的未知键一律只说「schema 不认识」，
-# 不猜它该改成什么 —— 猜出来的迁移建议没有任何东西给它背书。
-KNOWN = {
-    "download_detour": (
-        "1.14.0 起废弃，应改用内联 http_client；1.16.0 移除",
-        "https://sing-box.sagernet.org/migration/"
-        "#migrate-legacy-download-detour-to-http-client"),
-}
+# B 路只说「schema 不认识」，不猜它该改成什么 —— 迁移说明与链接统一由迁移表给，
+# 合并那一步会用表的 note / link 覆盖同路径的这一行。表外的未知键就只有这句。
 
 def deref(node, depth=0):
     while isinstance(node, dict) and "$ref" in node and depth < 64:
@@ -2170,14 +2512,23 @@ def pick_by_const(branches, value):
     remote 独有的合法键全被报成「schema 不认识」。
 
     另注意 inline 分支的 type 是 enum ["inline", ""]，而 inline 条目通常压根
-    不写 type —— 所以「配置里没这个键」在 allowed 含 "" 时要算隐式命中。"""
+    不写 type —— 所以「配置里没这个键」在 allowed 含 "" 时要算隐式命中。
+
+    规则的动作分支（DNSRule / Rule 的 allOf 第二段）判别键是 action:const，
+    而默认动作 route 的分支**不**把 action 列进 required：配置里没写 action 时，
+    没有任何分支能靠 const 命中，就取唯一一个「缺的判别键不在 required 里」的分支。"""
     if not isinstance(value, dict):
         return None
+    explicit, implicit, fallback = [], [], []
     for b in branches:
-        bd = deref(b)
+        bd = flatten(b, value)
+        if bd is None:
+            continue
         props = bd.get("properties", {})
+        required = bd.get("required", [])
         vetoed = False
         hits = 0
+        soft = 0
         for k, spec in props.items():
             spec = deref(spec)
             if "const" in spec:
@@ -2193,10 +2544,62 @@ def pick_by_const(branches, value):
                     vetoed = True
                     break
             elif "" in allowed:
-                hits += 1
-        if not vetoed and hits:
-            return bd
+                soft += 1
+            elif k in required:
+                # 判别键是必填的却没写：这个分支不可能是它。reject 动作分支的 method
+                # 枚举含 ""，不这样否决的话，一条没写 action 的普通规则会被「隐式命中」
+                # 到 reject 上去，outbound 随即被报成 schema 不认识。
+                vetoed = True
+                break
+        if vetoed:
+            continue
+        if hits:
+            explicit.append(bd)
+        elif soft:
+            implicit.append(bd)
+        else:
+            fallback.append(bd)
+    if explicit:
+        return explicit[0]
+    if implicit:
+        return implicit[0]
+    if len(fallback) == 1:
+        return fallback[0]
     return None
+
+def flatten(schema, value):
+    """deref 之后把 allOf 摊平成一个 dict：properties 取并集，
+    additionalProperties / unevaluatedProperties 取第一个见到的；part 里的 oneOf/anyOf
+    先按 value 选分支。任一 part 归不到分支就返回 None —— 调用方收手，宁可漏报。
+    真 schema 的 DNSRule / Rule 就是 oneOf[ {unevaluatedProperties:false,
+    allOf:[{匹配字段}, {oneOf: 动作分支}]} ] 这个形状，上一轮的 walker 在这里一律收手，
+    于是 dns.rules[].strategy 这种 schema:"omit" 的键在真内核上根本抓不到。"""
+    schema = deref(schema)
+    if not isinstance(schema, dict):
+        return None
+    if "allOf" not in schema:
+        return schema
+    merged = dict((k, v) for k, v in schema.items() if k != "allOf")
+    props = dict(merged.get("properties", {}))
+    for part in schema["allOf"]:
+        part = deref(part)
+        picked = None
+        for comb in ("oneOf", "anyOf"):
+            if comb in part:
+                picked = pick_by_const(part[comb], value) or pick_by_type(part[comb], value)
+                if picked is None:
+                    return None
+                part = picked
+                break
+        part = flatten(part, value)
+        if part is None:
+            return None
+        props.update(part.get("properties", {}))
+        for k in ("additionalProperties", "unevaluatedProperties"):
+            if k in part:
+                merged.setdefault(k, part[k])
+    merged["properties"] = props
+    return merged
 
 def pick_by_type(branches, value):
     want = json_type(value)
@@ -2210,7 +2613,7 @@ def pick_by_type(branches, value):
 found = []
 
 def walk(value, schema, path):
-    schema = deref(schema)
+    schema = flatten(schema, value)
     if not isinstance(schema, dict) or not schema:
         return
     for comb in ("oneOf", "anyOf"):
@@ -2226,7 +2629,7 @@ def walk(value, schema, path):
             return
     if isinstance(value, dict):
         props = schema.get("properties", {})
-        extra_ok = schema.get("additionalProperties", True)
+        extra_ok = schema.get("additionalProperties", schema.get("unevaluatedProperties", True))
         for k in value:
             sub = path + "." + k if path else k
             if k in props:
@@ -2242,10 +2645,126 @@ def walk(value, schema, path):
 walk(cfg, sch, "")
 
 for pth in found:
-    leaf = pth.rsplit(".", 1)[-1].split("[", 1)[0]
-    desc, url = KNOWN.get(leaf, ("schema 里没有这个键（已废弃、已移除，或拼错）",
-                                 DEPRECATED_URL))
-    sys.stdout.write("\t".join(("deprecated", "schema", pth, desc, url)) + "\n")
+    sys.stdout.write("\t".join(("deprecated", "schema", pth,
+                                "schema 里没有这个键（已废弃、已移除，或拼错）", DEPRECATED_URL)) + "\n")
+PY
+
+  #--- 迁移表档 + 沙箱日志档 + 合并 -------------------------------------------
+  # C 路：表里的谓词逐条对配置求值，能表达 A / B 都表达不了的「键合法但用法废弃」。
+  # D 路：$runlog 给了就 grep 内核 Start() 阶段的 WARN（版本无关，表外的新条目也抓得到）。
+  # 合并：按 JSON 路径去重，来源按 check+schema+table+run 合并，tier 取最高；说明与链接
+  # 以表为准覆盖（A / D 从 WARN 抠出的链接可能是死链，B 只会说「schema 不认识」）。
+  # A / D 的 WARN 行本身没有路径：先用表条目的 warn 正则认出是哪条，再贴到 C 路命中的
+  # 路径上；C 路没命中就以条目 id 当路径单独成行。「removed」只可能来自 A（内核拒绝）。
+  local lib; lib=$(mktmp); _cfg_pylib >"$lib"
+  python3 - "$lib" "$cfg" "$raw" "$runlog" "$kver" <<'PY'
+import json, re, sys
+exec(open(sys.argv[1]).read())
+cfg_path, raw_path, runlog, kver = sys.argv[2:6]
+try:
+    cfg = json.load(open(cfg_path))
+except Exception:
+    cfg = None
+rows = []            # {path, tier, src:set, desc, url, snippet, eid}
+RANK = {"removed": 3, "deprecated": 2, "notice": 1}
+SRC_ORDER = ("check", "schema", "table", "run")
+
+def add(path, tier, src, desc, url, snippet=None, eid=None):
+    for r in rows:
+        if r["path"] == path:
+            r["src"].add(src)
+            if RANK[tier] > RANK[r["tier"]]:
+                r["tier"] = tier
+            if src == "table":          # 表的说明与链接覆盖 A / B 的
+                r["desc"], r["url"], r["snippet"], r["eid"] = desc, url, snippet, eid
+            return r
+    r = {"path": path, "tier": tier, "src": set([src]), "desc": desc, "url": url, "snippet": snippet, "eid": eid}
+    rows.append(r)
+    return r
+
+# C 路
+if isinstance(cfg, dict):
+    for e in TABLE:
+        for hit in table_hits(cfg, e):
+            note = e["note"]
+            if e["tier"] == "deprecated" and e["removed_in"] and ver_tuple(e["removed_in"]) <= ver_tuple(kver):
+                note += "（文档称已在 %s 移除，本内核仍接受）" % e["removed_in"]
+            snippet, extra = snippet_for(e, hit)
+            if extra:
+                note += "。" + extra
+            add(hit[0], e["tier"], "table", note, e["link"], snippet, e["id"])
+
+def entry_for(text):
+    for e in TABLE:
+        if e["warn"] and re.search(e["warn"], text):
+            return e
+    return None
+
+def attach_warn(text, src, tier, url):
+    """把一行内核 WARN / FATAL 贴到表条目命中的路径上。"""
+    e = entry_for(text)
+    if e is None:
+        add("-", tier, src, text, url)
+        return
+    mine = [r for r in rows if r["eid"] == e["id"]]
+    if not mine and e["id"] == "legacy_address_filter":
+        # 离线只能给 notice 的规则集地址过滤：内核既然告警了，就升为 deprecated
+        mine = [r for r in rows if r["eid"] == "legacy_address_filter_rs"]
+        for r in mine:
+            r["desc"] = BY_ID["legacy_address_filter"]["note"] + "（规则集含 ip_cidr 条目，沙箱日志已定性）"
+    if mine:
+        for r in mine:
+            add(r["path"], tier, src, r["desc"], r["url"])
+    else:
+        add(e["id"], tier, src, e["note"], e["link"], None, e["id"])
+
+# A / B 路的原始行
+for line in open(raw_path):
+    line = line.rstrip("\n")
+    if not line:
+        continue
+    f = line.split("\t")
+    while len(f) < 5:
+        f.append("")
+    tier, src, path, desc, url = f[:5]
+    if src == "schema":
+        add(path, "deprecated", "schema", desc, url)
+    elif tier == "removed" and path not in ("-", ""):
+        # unknown field X：贴到叶子名等于 X 的路径上；没有就单独成行
+        mine = [r for r in rows if r["path"].rsplit(".", 1)[-1].split("[", 1)[0] == path]
+        if mine:
+            for r in mine:
+                add(r["path"], "removed", "check", r["desc"], r["url"])
+        else:
+            add(path, "removed", "check", desc, url)
+    elif tier == "removed":
+        attach_warn(desc, "check", "removed", url)
+    else:
+        attach_warn(desc, "check", "deprecated", url)
+
+# D 路
+if runlog:
+    try:
+        for line in open(runlog, errors="replace"):
+            if "deprecated in sing-box" not in line:
+                continue
+            text = re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+            text = re.sub(r"^.*?WARN\[\d+\]\s*", "", text)
+            m = re.search(r"(https://sing-box\.sagernet\.org/\S+)", text)
+            attach_warn(text, "run", "deprecated", m.group(1) if m else "")
+    except Exception:
+        pass
+
+def enc(sn):
+    return "" if not sn else sn.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
+
+rows.sort(key=lambda r: (-RANK[r["tier"]], r["path"] in ("-", ""), r["path"]))
+for r in rows:
+    src = "+".join(x for x in SRC_ORDER if x in r["src"])
+    out = [r["tier"], src, r["path"], r["desc"], r["url"]]
+    if r["snippet"]:
+        out.append(enc(r["snippet"]))
+    sys.stdout.write("\t".join(out) + "\n")
 PY
 }
 
@@ -2261,12 +2780,14 @@ _cfg_audit_notice() {
   _cfg_audit "$cfg" >"$rows" 2>/dev/null || return 0
   # ⚠️ 不写 $(grep -c ... || echo 0)：无命中时 grep 退 1，那个兜底会把计数变成
   # "0\n0"。自检点名过这个形状。
-  local n; n=$(wc -l <"$rows" | tr -d ' ')
+  # notice 档是行为变更提示，不算废弃；挂载点只报 removed / deprecated
+  local n; n=$(awk -F'\t' '$1=="removed"||$1=="deprecated"{n++} END{print n+0}' "$rows")
   [ "${n:-0}" != 0 ] || return 0
   warn "配置里有 ${n} 处废弃/未知字段（详情跑：$(basename "$0") config audit）："
-  local tier source path desc url
-  while IFS="$(printf '\t')" read -r tier source path desc url; do
+  local tier source path desc url snippet
+  while IFS="$(printf '\t')" read -r tier source path desc url snippet; do
     [ -n "$tier" ] || continue
+    [ "$tier" = notice ] && continue
     printf '        [%s/%s] %s —— %s\n' "$tier" "$source" "$path" "$desc" >&2
   done <"$rows"
   return 0
@@ -2475,8 +2996,9 @@ _cfg_apply() {
 # 把 _cfg_audit 的 TAB 行渲染成人话，并按 tier 定退出码：
 #   0 干净 / 2 有废弃项但内核仍接受 / 1 内核会拒
 # 与 cmd_verify 的两档约定同构 —— 1 是「现在就坏」，2 是「将来会坏」。
+# $1 配置路径  $2 沙箱日志路径（可空；--deep 或 --apply 第 3 道把它喂进来）
 _cfg_audit_report() {
-  local cfg="$1"
+  local cfg="$1" runlog="${2:-}"
   local rows; rows=$(mktmp)
 
   printf '配置审查：%s\n' "$cfg"
@@ -2484,22 +3006,35 @@ _cfg_audit_report() {
   kver=$("$BIN" version 2>/dev/null | head -1 | awk '{print $3}')
   [ -n "$kver" ] || die "内核不可用（${BIN} 问不出版本号），审查无法进行"
   info "内核 ${kver}"
+  # 迁移表只覆盖到 CFG_TABLE_COVERS 那个 minor。按 minor 比（1.14.9 不提示、1.15.0 提示）：
+  # 把 patch 位抹成 0 再用三段的 ver_gt。只提示，退出码不看它。
+  local kmm; kmm=$(printf '%s' "$kver" | cut -d. -f1,2)
+  if ver_gt "${kmm}.0" "$CFG_TABLE_COVERS"; then
+    warn "迁移表只覆盖到 ${CFG_TABLE_COVERS}，内核 ${kver} 新增的废弃项请用 --deep 或查 https://sing-box.sagernet.org/deprecated/"
+  fi
   # 这里是用户直接问的，「审不了」必须说出来 —— 不能拿一个没做成的检查
   # 去打印「没有废弃项」。
-  _cfg_audit "$cfg" >"$rows" \
+  _cfg_audit "$cfg" "$runlog" >"$rows" \
     || die "审查没做成（读不到 ${cfg}，或内核跑不起来）—— 这不代表配置没问题"
 
-  local n_removed=0 n_deprecated=0
-  local tier source path desc url
-  while IFS="$(printf '\t')" read -r tier source path desc url; do
+  local n_removed=0 n_deprecated=0 n_notice=0
+  local tier source path desc url snippet
+  while IFS="$(printf '\t')" read -r tier source path desc url snippet; do
     [ -n "$tier" ] || continue
     case "$tier" in
       removed)    n_removed=$((n_removed + 1)) ;;
       deprecated) n_deprecated=$((n_deprecated + 1)) ;;
+      notice)     n_notice=$((n_notice + 1)) ;;
     esac
     printf '  [%s/%s] %s\n' "$tier" "$source" "$path"
     printf '      %s\n' "$desc"
     [ -n "$url" ] && printf '      迁移：%s\n' "$url"
+    # snippet 型条目：片段按 v1.14.0 源码语义推导，没做过行为差分（需要旧内核二进制），
+    # 所以只打出来，不落地。行内的换行/制表符是 _cfg_audit 用 \\n \\t 转义过的。
+    if [ -n "${snippet:-}" ]; then
+      printf '      建议写法（按 v1.14.0 源码语义推导，未经行为验证，需人工核对）：\n'
+      printf '%b\n' "$snippet" | sed 's/^/        /'
+    fi
   done <"$rows"
 
   if [ "$n_removed" -gt 0 ]; then
@@ -2510,7 +3045,12 @@ _cfg_audit_report() {
     warn "${n_deprecated} 项已废弃：现在能跑，将来会坏"
     return 2
   fi
-  ok "没有废弃项，也没有未知键"
+  # notice 是行为变更提示，不是废弃：配置照旧合法，退出码不看它
+  if [ "$n_notice" -gt 0 ]; then
+    ok "没有废弃项，也没有未知键（${n_notice} 条行为变更提示见上）"
+  else
+    ok "没有废弃项，也没有未知键"
+  fi
   return 0
 }
 
