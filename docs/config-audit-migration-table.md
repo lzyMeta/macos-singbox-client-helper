@@ -349,6 +349,10 @@ for i in 1 2 3 4 5; do ./tests/run.sh >/dev/null 2>&1 || echo "第 $i 次红"; d
 - `config/config.example.json` 里还有 21 条 `download_detour`（模板没跟着 live 迁）。本文只让它加 `$schema`，
   没动——另立项。
 - `tests/fixtures/migration-anchors.txt` 在 U0 提交前就已生成，被一起带进了 `fd32969`。
+- review（verifier）抓到合并逻辑两处：表外的 A/D 路发现都以路径 `-` 进合并、互相吞掉（改为无路径的行以原文为去重键）；
+  `unknown field X` 在 B 路同键之前处理、贴不上去、报成两行两档（改为 B 路先于 A 路处理）。均已补断言修复。
+  未核实的怀疑：直接地址过滤规则与 rule_set 规则共存时，内核那条 WARN 若是全局只打一次，反向定性会误撤 rs 的 notice——
+  要真内核核实 `deprecated.Report` 是按 note 去重还是逐规则打。
 
 ### 人工验收（要动 live，本人跑）
 

@@ -2671,8 +2671,10 @@ RANK = {"removed": 3, "deprecated": 2, "notice": 1}
 SRC_ORDER = ("check", "schema", "table", "run")
 
 def add(path, tier, src, desc, url, snippet=None, eid=None):
+    # 去重键是路径；没有路径的行（表外的 WARN / FATAL 原文，path 为 "-"）以原文为键，
+    # 否则两条不同的表外 WARN 会被判成同一条，第二条起静默丢失。
     for r in rows:
-        if r["path"] == path:
+        if r["path"] == path and (path != "-" or r["desc"] == desc):
             r["src"].add(src)
             if RANK[tier] > RANK[r["tier"]]:
                 r["tier"] = tier
@@ -2719,7 +2721,9 @@ def attach_warn(text, src, tier, url):
     else:
         add(e["id"], tier, src, e["note"], e["link"], None, e["id"])
 
-# A / B 路的原始行
+# A / B 路的原始行。B（schema）先于 A（check）处理：A 的「unknown field X」要贴到
+# 带完整路径的那一行上，而那一行可能只有 B 给得出（表外的键 C 路没有）。
+raw_rows = []
 for line in open(raw_path):
     line = line.rstrip("\n")
     if not line:
@@ -2727,7 +2731,9 @@ for line in open(raw_path):
     f = line.split("\t")
     while len(f) < 5:
         f.append("")
-    tier, src, path, desc, url = f[:5]
+    raw_rows.append(f[:5])
+raw_rows.sort(key=lambda f: 0 if f[1] == "schema" else 1)
+for tier, src, path, desc, url in raw_rows:
     if src == "schema":
         add(path, "deprecated", "schema", desc, url)
     elif tier == "removed" and path not in ("-", ""):

@@ -48,7 +48,7 @@ case "${1:-}" in
     [ "${SB_FAKE_DEPRECATED:-}" = "$SB_SELF_VERSION" ] && \
       echo "WARN[0000] deprecated: option domain_strategy is deprecated in sing-box 1.14.0"
     if _hits "${SB_FAKE_CHECK_FAIL:-}"; then
-      echo "FATAL[0000] decode config at ${3:-?}: unknown field domain_strategy" >&2
+      echo "FATAL[0000] decode config at ${3:-?}: unknown field ${SB_FAKE_UNKNOWN_FIELD:-domain_strategy}" >&2
       exit 1
     fi
     # 按配置内容判，跟真内核同一个口径。三种反应各自对应发现层的一档：

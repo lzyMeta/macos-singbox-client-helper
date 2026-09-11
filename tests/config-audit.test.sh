@@ -910,6 +910,43 @@ else
 fi
 unset SB_FAKE_MIGRATED SB_FAKE_UDP
 
+#=============================================================================
+# 合并逻辑的两个边界（review 发现）
+#=============================================================================
+echo "验证合并逻辑的边界"
+
+#-- R1. 表外的 D 路 WARN 两条都得出现：路径 - 不能当去重键 -----------------------
+setup
+printf 'WARN[0000] foo_option is deprecated in sing-box 1.15.0 and will be removed in sing-box 1.17.0.\nWARN[0000] bar_option is deprecated in sing-box 1.15.0 and will be removed in sing-box 1.17.0.\n' > "$ROOT/two.log"
+export SB_FAKE_UDP=alive SB_FAKE_RUN_LOG="$ROOT/two.log"
+audit --config "$FIX/good-http-client.json" --deep
+ran "表外 WARN 两条"
+if inlog 'foo_option' && inlog 'bar_option' && inlog '2 项已废弃'; then
+  ok "表外 WARN：两条都出现，计数 2"
+else
+  ng "表外 WARN：第二条被路径 - 吞掉了（计数 $(grep -o '[0-9]* 项已废弃' "$LOG"))"
+fi
+unset SB_FAKE_RUN_LOG SB_FAKE_UDP
+
+#-- R2. unknown field X 要贴到 B 路的路径上：一行、removed/check+schema -------------
+setup
+cp "$FIX/good-http-client.json" "$ROOT/bogus.json"
+python3 - "$ROOT/bogus.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d["experimental"]["cache_file"]["bogus_key"] = True
+json.dump(d, open(sys.argv[1], "w"), indent=2)
+PY
+export SB_FAKE_CHECK_FAIL="all:$VER" SB_FAKE_UNKNOWN_FIELD=bogus_key
+audit --config "$ROOT/bogus.json"
+ran "unknown field 与 schema 同键"
+if [ "$CODE" = 1 ] && hit 'removed/check+schema] experimental.cache_file.bogus_key' \
+   && [ "$(grep -c 'bogus_key' "$LOG")" = 1 ]; then
+  ok "unknown field：与 schema 的同一键合并成一行 removed/check+schema"
+else
+  ng "unknown field：没与 schema 的同一键合并（退 ${CODE}，bogus_key 出现 $(grep -c 'bogus_key' "$LOG") 次）"
+fi
+unset SB_FAKE_CHECK_FAIL SB_FAKE_UNKNOWN_FIELD
+
 echo
 printf '通过 %d，失败 %d\n' "$pass" "$fail"
 [ "$fail" = 0 ]
