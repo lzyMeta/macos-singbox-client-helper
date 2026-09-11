@@ -465,7 +465,7 @@ if inlog '没做成'; then
 else
   ng "读不到配置：没说清是审不了"
 fi
-if inlog 'removed' || inlog '已被本版本内核移除'; then
+if inlog '起不来' || inlog '内核拒绝'; then
   ng "读不到配置：被误报成「配置里有已移除字段」"
 else
   ok "读不到配置：没有误报成废弃/移除项"
@@ -540,21 +540,24 @@ if [ -n "$saved_lockdir" ]; then export SB_LOCKDIR="$saved_lockdir"; else unset 
 #=============================================================================
 echo "验证 config audit 的迁移表档"
 
-# 报告里点名某条发现：形如 "[<tier>/<sources>] <path>"。sources 用 + 连接。
-# 这里用固定串而不是正则：路径里的 [ ] . 都是正则元字符。
-hit() { grep -F -- "$1" "$LOG" >/dev/null; }
+# 报告的汇总表一行是 " #  结论  在哪  谁发现的  怎么办"。row <结论> <路径片段> <来源串>：
+# 同一行里三样都要出现。结论用人话（起不来 / 将来会坏 / 提示），来源串按 check schema 表 run 的
+# 固定顺序、空格分隔。路径与来源用固定串匹配：路径里的 [ ] . 都是正则元字符。
+row() { grep -E "^ *[0-9]+ +$1 " "$LOG" | grep -F -- "$2" | grep -F -- "$3" >/dev/null; }
+# 详情段里的一行（链接、原委、位置列表）
+detail() { sed -n '/^详情/,$p' "$LOG" | grep -F -- "$1" >/dev/null; }
 
 #-- T1. 隐式 HTTP client：check / schema 都看不见，只有表能报 -----------------
 setup
 audit --config "$FIX/bad-implicit-http-client.json"
 ran "隐式 HTTP client"
 if [ "$CODE" = 2 ]; then ok "隐式 HTTP client：退出 2"; else ng "隐式 HTTP client：期望 2，实际 $CODE"; fi
-if hit 'table] route.rule_set[0]' ; then
+if row '将来会坏' 'route.rule_set[0]' '表'; then
   ok "隐式 HTTP client：点名 route.rule_set[0]，来源 table"
 else
   ng "隐式 HTTP client：没点名 route.rule_set[0]（来源 table）"
 fi
-if hit 'route.rule_set[1]'; then
+if inlog 'route\.rule_set\[1\]'; then
   ng "隐式 HTTP client：rule_set[1] 显式给了 http_client，却被点名了"
 else
   ok "隐式 HTTP client：显式 http_client 的 rule_set[1] 没被点名"
@@ -573,12 +576,12 @@ setup
 audit --config "$FIX/bad-legacy-address-filter.json"
 ran "遗留地址过滤"
 if [ "$CODE" = 2 ]; then ok "遗留地址过滤：退出 2"; else ng "遗留地址过滤：期望 2，实际 $CODE"; fi
-if hit 'deprecated/table] dns.rules[0]'; then
+if row '将来会坏' 'dns.rules[0]' '表'; then
   ok "遗留地址过滤：点名无 match_response 的 dns.rules[0]"
 else
   ng "遗留地址过滤：没点名 dns.rules[0]"
 fi
-if grep -F -- '] dns.rules[1]' "$LOG" | grep -v notice >/dev/null; then
+if grep -E '^ *[0-9]+ +(将来会坏|起不来) ' "$LOG" | grep -F 'dns.rules[1]' >/dev/null; then
   ng "遗留地址过滤：带 match_response: true 的 dns.rules[1] 被当成废弃用法点名了"
 else
   ok "遗留地址过滤：match_response: true 的 dns.rules[1] 没被点名"
@@ -610,10 +613,10 @@ if [ "$n" = 1 ]; then
 else
   ng "store_rdrc：期望一行，实际 ${n} 行（去重没做）"
 fi
-if hit 'deprecated/check+schema+table] experimental.cache_file.store_rdrc'; then
-  ok "store_rdrc：来源栏 check+schema+table"
+if row '将来会坏' 'experimental.cache_file.store_rdrc' 'check schema 表'; then
+  ok "store_rdrc：来源栏 check schema 表"
 else
-  ng "store_rdrc：来源栏不是 check+schema+table"
+  ng "store_rdrc：来源栏不是 check schema 表"
 fi
 if inlog 'migration/#migrate-store_rdrc'; then
   ok "store_rdrc：链接以表为准（check 档自带的假锚点被覆盖）"
@@ -626,12 +629,12 @@ setup
 audit --config "$FIX/bad-hysteria-tuning.json"
 ran "Hysteria 调优字段"
 if [ "$CODE" = 2 ]; then ok "Hysteria 调优字段：退出 2"; else ng "Hysteria 调优字段：期望 2，实际 $CODE"; fi
-if hit 'schema+table] outbounds[2].recv_window_conn' && hit 'schema+table] outbounds[2].disable_mtu_discovery'; then
-  ok "Hysteria 调优字段：两处都点名，来源 schema+table"
+if row '将来会坏' 'outbounds[2].recv_window_conn' 'schema 表' && row '将来会坏' 'outbounds[2].disable_mtu_discovery' 'schema 表'; then
+  ok "Hysteria 调优字段：两处都点名，来源 schema 表"
 else
-  ng "Hysteria 调优字段：没有以 schema+table 点名两处"
+  ng "Hysteria 调优字段：没有以 schema 表 点名两处"
 fi
-if grep -F 'outbounds[2]' "$LOG" | grep -q 'run'; then
+if grep -F 'outbounds[2]' "$LOG" | grep -q ' run'; then
   ng "Hysteria 调优字段：来源里出现了 run（内核对它不告警）"
 else
   ok "Hysteria 调优字段：来源不含 run"
@@ -643,7 +646,7 @@ setup
 audit --config "$FIX/notice-query-type.json"
 ran "notice"
 if [ "$CODE" = 0 ]; then ok "notice：退出 0（不影响退出码）"; else ng "notice：期望 0，实际 $CODE"; fi
-if hit 'notice/table] dns.rules[0]'; then ok "notice：点名 dns.rules[0]"; else ng "notice：没点名 dns.rules[0]"; fi
+if row '提示' 'dns.rules[0]' '表'; then ok "notice：点名 dns.rules[0]"; else ng "notice：没点名 dns.rules[0]"; fi
 if inlog 'migration/#ip_version-and-query_type-behavior-changes-in-dns-rules'; then
   ok "notice：带官方链接"
 else
@@ -672,10 +675,10 @@ fi
 setup
 audit --config "$FIX/bad-dns-strategy.json"
 ran "strategy ipv4_only"
-if [ "$CODE" = 2 ] && hit 'schema+table] dns.rules[0].strategy'; then
-  ok "strategy：schema+table 点名 dns.rules[0].strategy，退 2"
+if [ "$CODE" = 2 ] && row '将来会坏' 'dns.rules[0].strategy' 'schema 表'; then
+  ok "strategy：schema 表 点名 dns.rules[0].strategy，退 2"
 else
-  ng "strategy：没以 schema+table 点名（退 ${CODE}）"
+  ng "strategy：没以 schema 表 点名（退 ${CODE}）"
 fi
 if inlog '建议写法' && grep -F '"query_type": ["AAAA"]' "$LOG" >/dev/null; then
   ok "strategy ipv4_only：片段含 query_type: [\"AAAA\"]"
@@ -716,7 +719,7 @@ export SB_FAKE_UDP=alive SB_FAKE_RUN_LOG="$FIX/sandbox-run.log"
 audit --config "$FIX/good-http-client.json" --deep
 ran "--deep 有日志"
 if [ "$CODE" = 2 ]; then ok "--deep：沙箱日志里的 WARN 让退出码变 2"; else ng "--deep：期望 2，实际 ${CODE}"; fi
-if hit 'deprecated/run] implicit_http_client' && hit 'deprecated/run] dns_rule_strategy' && hit 'deprecated/run] legacy_address_filter'; then
+if row '将来会坏' 'implicit_http_client' 'run' && row '将来会坏' 'dns_rule_strategy' 'run' && row '将来会坏' 'legacy_address_filter' 'run'; then
   ok "--deep：3 条 WARN 全部出现，来源 run（配置里离线定位不到，以条目 id 为路径）"
 else
   ng "--deep：3 条 WARN 没有全部以来源 run 出现"
@@ -736,10 +739,10 @@ printf 'WARN[0000] `store_rdrc` cache file option is deprecated in sing-box 1.14
 export SB_FAKE_UDP=alive SB_FAKE_RUN_LOG="$ROOT/rdrc.log"
 audit --config "$FIX/bad-store-rdrc.json" --deep
 ran "store_rdrc --deep"
-if [ "$(grep -c 'experimental.cache_file.store_rdrc' "$LOG")" = 1 ] && hit 'deprecated/check+schema+table+run] experimental.cache_file.store_rdrc'; then
-  ok "store_rdrc --deep：四路全中合并成一行，来源 check+schema+table+run"
+if [ "$(grep -c 'experimental.cache_file.store_rdrc' "$LOG")" = 1 ] && row '将来会坏' 'experimental.cache_file.store_rdrc' 'check schema 表 run'; then
+  ok "store_rdrc --deep：四路全中合并成一行，来源 check schema 表 run"
 else
-  ng "store_rdrc --deep：没有合并成一行 check+schema+table+run"
+  ng "store_rdrc --deep：没有合并成一行 check schema 表 run"
 fi
 unset SB_FAKE_RUN_LOG SB_FAKE_UDP
 
@@ -748,7 +751,7 @@ setup
 export SB_FAKE_UDP=alive SB_FAKE_RUN_LOG="$FIX/sandbox-run.log"
 audit --config "$FIX/bad-hysteria-tuning.json" --deep
 ran "Hysteria --deep"
-if hit 'schema+table] outbounds[2].recv_window_conn' && ! grep -F 'outbounds[2]' "$LOG" | grep -q 'run'; then
+if row '将来会坏' 'outbounds[2].recv_window_conn' 'schema 表' && ! grep -F 'outbounds[2]' "$LOG" | grep -q ' run'; then
   ok "Hysteria --deep：来源仍是 schema+table，D 路没误报"
 else
   ng "Hysteria --deep：D 路给 Hysteria 字段添了 run，或点名丢了"
@@ -767,14 +770,14 @@ d["dns"] = {"servers": [{"type": "udp", "tag": "dns-direct", "server": "223.5.5.
 json.dump(d, open(sys.argv[1], "w"), indent=2)
 PY
 audit --config "$ROOT/rs.json"
-if [ "$CODE" = 0 ] && hit 'notice/table] dns.rules[0]'; then
+if [ "$CODE" = 0 ] && row '提示' 'dns.rules[0]' '表'; then
   ok "规则集地址过滤：离线只出 notice，退 0"
 else
   ng "规则集地址过滤：离线没有出 notice 或退出码 ${CODE} ≠ 0"
 fi
 export SB_FAKE_UDP=alive SB_FAKE_RUN_LOG="$ROOT/af.log"
 audit --config "$ROOT/rs.json" --deep
-if [ "$CODE" = 2 ] && hit 'deprecated/table+run] dns.rules[0]'; then
+if [ "$CODE" = 2 ] && row '将来会坏' 'dns.rules[0]' '表 run'; then
   ok "规则集地址过滤：--deep 定性后升为 deprecated，来源 table+run，退 2"
 else
   ng "规则集地址过滤：--deep 没有把 notice 升为 deprecated（退 ${CODE}）"
@@ -788,7 +791,7 @@ open(sys.argv[2], "w").writelines(l for l in open(sys.argv[1]) if "Address Filte
 PY
 export SB_FAKE_RUN_LOG="$ROOT/no-af.log"
 audit --config "$ROOT/rs.json" --deep
-if inlog '沙箱建链成功' && ! grep -F '] dns.rules[0]' "$LOG" >/dev/null; then
+if inlog '沙箱建链成功' && ! grep -E '^ *[0-9]+ +提示 ' "$LOG" | grep -F 'dns.rules[0]' >/dev/null; then
   ok "规则集地址过滤：--deep 建链成功且内核没告警 → notice 撤掉"
 else
   ng "规则集地址过滤：--deep 已定性为「不是遗留用法」，notice 却还在"
@@ -921,10 +924,10 @@ printf 'WARN[0000] foo_option is deprecated in sing-box 1.15.0 and will be remov
 export SB_FAKE_UDP=alive SB_FAKE_RUN_LOG="$ROOT/two.log"
 audit --config "$FIX/good-http-client.json" --deep
 ran "表外 WARN 两条"
-if inlog 'foo_option' && inlog 'bar_option' && inlog '2 项已废弃'; then
+if inlog 'foo_option' && inlog 'bar_option' && inlog '2 项将来会坏'; then
   ok "表外 WARN：两条都出现，计数 2"
 else
-  ng "表外 WARN：第二条被路径 - 吞掉了（计数 $(grep -o '[0-9]* 项已废弃' "$LOG"))"
+  ng "表外 WARN：第二条被路径 - 吞掉了（计数 $(grep -o '[0-9]* 项将来会坏' "$LOG"))"
 fi
 unset SB_FAKE_RUN_LOG SB_FAKE_UDP
 
@@ -939,9 +942,9 @@ PY
 export SB_FAKE_CHECK_FAIL="all:$VER" SB_FAKE_UNKNOWN_FIELD=bogus_key
 audit --config "$ROOT/bogus.json"
 ran "unknown field 与 schema 同键"
-if [ "$CODE" = 1 ] && hit 'removed/check+schema] experimental.cache_file.bogus_key' \
+if [ "$CODE" = 1 ] && row '起不来' 'experimental.cache_file.bogus_key' 'check schema' \
    && [ "$(grep -c 'bogus_key' "$LOG")" = 1 ]; then
-  ok "unknown field：与 schema 的同一键合并成一行 removed/check+schema"
+  ok "unknown field：与 schema 的同一键合并成一行 起不来/check schema"
 else
   ng "unknown field：没与 schema 的同一键合并（退 ${CODE}，bogus_key 出现 $(grep -c 'bogus_key' "$LOG") 次）"
 fi
@@ -963,7 +966,7 @@ printf 'WARN[0000] Legacy Address Filter Fields in DNS rules is deprecated in si
 export SB_FAKE_UDP=alive SB_FAKE_RUN_LOG="$ROOT/af.log"
 audit --config "$ROOT/mix.json" --deep
 ran "直接过滤 + rule_set 共存"
-if hit 'deprecated/table+run] dns.rules[0]' && hit 'notice/table] dns.rules[1]'; then
+if row '将来会坏' 'dns.rules[0]' '表 run' && row '提示' 'dns.rules[1]' '表'; then
   ok "共存：WARN 贴到直接规则 dns.rules[0]，rule_set 的 dns.rules[1] 维持 notice（既不升也不撤）"
 else
   ng "共存：dns.rules[1] 的 notice 被撤掉或被误升（全局一次的 WARN 定性不了它）"
@@ -980,11 +983,11 @@ d["route"]["rule_set"] = [dict(tpl, tag="rs%d" % i) for i in range(11)]
 json.dump(d, open(sys.argv[1], "w"), indent=2)
 PY
 audit --config "$ROOT/many.json"
-order=$(grep -o 'route.rule_set\[[0-9]*\]' "$LOG" | sed 's/[^0-9]//g' | tr '\n' ' ')
-if [ "$order" = "0 1 2 3 4 5 6 7 8 9 10 " ]; then
-  ok "路径自然排序：0…9 之后才是 10"
+order=$(sed -n '/^详情/,$p' "$LOG" | grep -o 'route.rule_set\[[0-9]*\]' | sed 's/[^0-9]//g' | tr '\n' ' ')
+if [ "$order" = "0 1 2 3 4 5 6 7 8 9 10 " ] && row '将来会坏' 'route.rule_set[0…10].download_detour' 'schema 表'; then
+  ok "路径自然排序：0…9 之后才是 10；表格里压成 rule_set[0…10]（11 处）"
 else
-  ng "路径排序不是自然序：${order}"
+  ng "路径排序不是自然序或没压缩：${order}"
 fi
 
 echo

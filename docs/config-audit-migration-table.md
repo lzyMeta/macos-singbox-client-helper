@@ -342,7 +342,9 @@ for i in 1 2 3 4 5; do ./tests/run.sh >/dev/null 2>&1 || echo "第 $i 次红"; d
   （那两个 ✓ 的依据是源码 `schema:"omit"`，不是 walker 实测）。修 walker 时又踩到 `reject` 分支的 `method`
   枚举含 `""`：「缺键算隐式命中」会把没写 `action` 的规则误归到 `reject`。两处都修了，`schema-min.json`
   照真 schema 的形状重写让测试守住它。修完后 17 个 probe fixture 在真 schema 上零误报。
-- 发现行格式**尾部加了可选第 6 列** `snippet`（换行/制表符转义），前 5 列不变；旧消费者（挂载点、verify）不受影响。
+- 发现行格式**尾部加了第 6 列** `snippet`（换行/制表符转义）与**第 7 列** `action`（「怎么办」一句话），前 5 列不变；
+  旧消费者（挂载点、verify）只读前 4 列，不受影响。报告渲染改为汇总表 + 编号详情（2026-09-11，按真机反馈重做：
+  同一问题的多处合并成一行，档位用人话），断言随之改写为 `row <结论> <路径> <来源串>`。
 - `deprecated.md` 里 `download_detour` 那条的 Migration 链接误指 ACME 一节；v1.14.0 的 `migration.md` 既无
   `download_detour` 也无 `strategy` 的章节。表里这两条链接分别指向 rule-set 配置页的 `http_client` 小节和
   DNS rule action 页的 `strategy` 小节，`note` 里注明。

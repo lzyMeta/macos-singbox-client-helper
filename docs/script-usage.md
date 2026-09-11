@@ -450,6 +450,27 @@ singbox config audit --deep                   # 加沙箱日志档：起一次�
 singbox config audit --apply                  # 三条改写规则 + 四道验收后落地
 ```
 
+报告是一张汇总表加编号详情：同一问题的多处合并成一行（21 条 `download_detour` 是一行「21 处」，
+在哪一列压成 `route.rule_set[0…20].download_detour`），四列只放看得懂的东西——结论（起不来 /
+将来会坏 / 提示）、在哪、谁发现的（`check schema 表 run`）、怎么办；原委、链接、建议片段按编号放到
+「详情」。
+
+```
+配置审查：/usr/local/etc/sing-box/config.json   内核 1.14.0
+
+ #  结论      在哪                                谁发现的         怎么办
+ 1  将来会坏  experimental.cache_file.store_rdrc  check schema 表  改名为 store_dns: true（--apply 可自动）
+ 2  提示      dns.rules[0]                        表               确认内部解析也受它影响是想要的
+
+  ! 1 项将来会坏：现在能跑，下个大版本内核会拒收，1 条提示
+
+详情
+ 1  cache_file.store_rdrc 1.14.0 废弃、1.16.0 移除：值为 true 且没有 store_dns 时改名为 store_dns: true，否则删掉
+    https://sing-box.sagernet.org/migration/#migrate-store_rdrc
+ 2  1.14.0 起 query_type / ip_version 也作用于内部解析…
+    https://sing-box.sagernet.org/migration/#ip_version-and-query_type-behavior-changes-in-dns-rules
+```
+
 退出码分三档，与 `verify` 的两档同构；`notice` 档只提示、不进退出码：
 
 | 码 | 含义 |

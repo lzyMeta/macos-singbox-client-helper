@@ -2062,68 +2062,68 @@ import json, re, sys
 # 维护：内核出新 minor 时按 docs/script-usage.md「迁移表怎么维护」更新条目，并改 bash 侧的
 # CFG_TABLE_COVERS。链接一律写整段字面量，不拼接——tests 里的锚点核对是 grep 源码做的。
 
-# 每条：id / match（key：JSON 路径模式；usage：具名谓词）/ deprecated_in / removed_in /
+# 每条：id / action（报告「怎么办」那一列的一句话）/ match（key：JSON 路径模式；usage：具名谓词）/ deprecated_in / removed_in /
 # tier（deprecated | notice）/ stage（new：内核在 New() 阶段告警，check 能抓；start：只有
 # 实跑到 Start() 才告警，只有 run 档能抓；none：内核永远不告警）/ warn（把 check / run 档
 # 的 WARN 原文对回本条的正则）/ link（核对过 v1.14.0 docs/ 的链接）/ note / fix（auto：
 # --apply 落地；snippet：只出片段；report：只报）/ rewrite（auto 条目的改写规则）。
 TABLE = [
     # ---- 1.14.0 ----
-    {"id": "download_detour", "match": {"kind": "key", "paths": ["route.rule_set[type=remote].download_detour"]},
+    {"id": "download_detour", "action": "改为内联 http_client（--apply 可自动）", "match": {"kind": "key", "paths": ["route.rule_set[type=remote].download_detour"]},
      "deprecated_in": "1.14.0", "removed_in": "1.16.0", "tier": "deprecated", "stage": "start",
      "warn": r"download_detour", "fix": "auto",
      "rewrite": {"op": "wrap", "new_key": "http_client", "wrap_key": "detour"},
      "link": "https://sing-box.sagernet.org/configuration/rule-set/#http_client",
      "note": "1.14.0 起废弃，应改为内联 http_client: {\"detour\": X}；1.16.0 移除。"
              "v1.14.0 的 migration.md 没有这一条的章节（deprecated 页的 Migration 链接误指 ACME 一节），链接给的是 rule-set 配置页"},
-    {"id": "implicit_http_client", "match": {"kind": "usage", "name": "implicit_http_client"},
+    {"id": "implicit_http_client", "action": "给这条规则集写内联 http_client", "match": {"kind": "usage", "name": "implicit_http_client"},
      "deprecated_in": "1.14.0", "removed_in": "1.16.0", "tier": "deprecated", "stage": "start",
      "warn": r"implicit default HTTP client", "fix": "report",
      "link": "https://sing-box.sagernet.org/configuration/rule-set/#http_client",
      "note": "远程规则集既无 http_client 也无 download_detour，顶层 http_clients 与 route.default_http_client 又都空 —— "
              "1.14.0 起用「默认出站」下载规则集是废弃行为（common/httpclient/manager.go:41-44,76-80）。"
              "给这条规则集写内联 http_client: {\"detour\": ...}；不建议引入 default_http_client（全局副作用）"},
-    {"id": "inline_acme", "match": {"kind": "key", "paths": ["inbounds[].tls.acme"]},
+    {"id": "inline_acme", "action": "改用 certificate_providers", "match": {"kind": "key", "paths": ["inbounds[].tls.acme"]},
      "deprecated_in": "1.14.0", "removed_in": "1.16.0", "tier": "deprecated", "stage": "new",
      "warn": r"inline ACME", "fix": "report",
      "link": "https://sing-box.sagernet.org/migration/#migrate-inline-acme-to-certificate-provider",
      "note": "TLS 内联 ACME 选项 1.14.0 废弃，改用 certificate_providers + tls.certificate_provider；1.16.0 移除"},
-    {"id": "dns_rule_strategy", "match": {"kind": "key", "paths": ["dns.rules[**].strategy"]},
+    {"id": "dns_rule_strategy", "action": "ipv4_only / ipv6_only 按详情里的片段改；prefer_* 直接删", "match": {"kind": "key", "paths": ["dns.rules[**].strategy"]},
      "deprecated_in": "1.14.0", "removed_in": "1.16.0", "tier": "deprecated", "stage": "start",
      "warn": r"`strategy` DNS rule action", "fix": "snippet",
      "link": "https://sing-box.sagernet.org/configuration/dns/rule_action/#strategy",
      "note": "DNS 规则动作的 strategy 1.14.0 废弃，1.16.0 移除。v1.14.0 的 migration.md 无 migration 章节，"
              "内核 WARN 给的 #migrate-dns-rule-action-strategy-to-rule-items 是死链；链接给的是 rule action 页的 strategy 小节"},
-    {"id": "accept_empty", "match": {"kind": "key", "paths": ["dns.rules[**].rule_set_ip_cidr_accept_empty"]},
+    {"id": "accept_empty", "action": "删掉，改用 evaluate + match_response", "match": {"kind": "key", "paths": ["dns.rules[**].rule_set_ip_cidr_accept_empty"]},
      "deprecated_in": "1.14.0", "removed_in": "1.16.0", "tier": "deprecated", "stage": "new",
      "warn": r"rule_set_ip_cidr_accept_empty", "fix": "report",
      "link": "https://sing-box.sagernet.org/migration/#migrate-address-filter-fields-to-response-matching",
      "note": "rule_set_ip_cidr_accept_empty 1.14.0 废弃，随地址过滤一起改为 evaluate + match_response；1.16.0 移除"},
-    {"id": "legacy_address_filter", "match": {"kind": "usage", "name": "legacy_address_filter"},
+    {"id": "legacy_address_filter", "action": "改为 evaluate + match_response（见详情建议写法）", "match": {"kind": "usage", "name": "legacy_address_filter"},
      "deprecated_in": "1.14.0", "removed_in": "1.16.0", "tier": "deprecated", "stage": "start",
      "warn": r"Legacy Address Filter Fields", "fix": "snippet",
      "link": "https://sing-box.sagernet.org/migration/#migrate-address-filter-fields-to-response-matching",
      "note": "DNS 规则带 ip_cidr / ip_is_private / ip_accept_any 却没开 match_response —— 键合法、用法废弃（1.14.0），"
              "1.16.0 起拒绝。改为 evaluate 取响应 + match_response 匹配"},
-    {"id": "legacy_address_filter_rs", "match": {"kind": "usage", "name": "legacy_address_filter_rs"},
+    {"id": "legacy_address_filter_rs", "action": "--deep 定性；是的话改 evaluate + match_response", "match": {"kind": "usage", "name": "legacy_address_filter_rs"},
      "deprecated_in": "1.14.0", "removed_in": "1.16.0", "tier": "notice", "stage": "start",
      "warn": None, "fix": "report",
      "link": "https://sing-box.sagernet.org/migration/#migrate-address-filter-fields-to-response-matching",
      "note": "DNS 规则引用了规则集但没开 match_response：若该规则集含 ip_cidr 条目（如 geoip），这就是废弃的地址过滤用法。"
              "离线看不到规则集内容（dns/router.go:1631-1638 靠规则集元数据判），用 --deep 定性"},
-    {"id": "independent_cache", "match": {"kind": "key", "paths": ["dns.independent_cache"]},
+    {"id": "independent_cache", "action": "删掉这个键（--apply 可自动）", "match": {"kind": "key", "paths": ["dns.independent_cache"]},
      "deprecated_in": "1.14.0", "removed_in": "1.16.0", "tier": "deprecated", "stage": "new",
      "warn": r"independent_cache", "fix": "auto",
      "rewrite": {"op": "delete"},
      "link": "https://sing-box.sagernet.org/migration/#migrate-independent-dns-cache",
      "note": "dns.independent_cache 1.14.0 废弃、1.16.0 移除；migration 原话「Simply remove the field」"},
-    {"id": "store_rdrc", "match": {"kind": "key", "paths": ["experimental.cache_file.store_rdrc"]},
+    {"id": "store_rdrc", "action": "改名为 store_dns: true（--apply 可自动）", "match": {"kind": "key", "paths": ["experimental.cache_file.store_rdrc"]},
      "deprecated_in": "1.14.0", "removed_in": "1.16.0", "tier": "deprecated", "stage": "new",
      "warn": r"store_rdrc", "fix": "auto",
      "rewrite": {"op": "rename_if_true", "new_key": "store_dns"},
      "link": "https://sing-box.sagernet.org/migration/#migrate-store_rdrc",
      "note": "cache_file.store_rdrc 1.14.0 废弃、1.16.0 移除：值为 true 且没有 store_dns 时改名为 store_dns: true，否则删掉"},
-    {"id": "hysteria_v1_tuning", "match": {"kind": "key", "paths": [
+    {"id": "hysteria_v1_tuning", "action": "删掉，改用共享的 quic 参数", "match": {"kind": "key", "paths": [
         "%s[type=hysteria].%s" % (side, f)
         for side in ("outbounds", "inbounds")
         for f in ("recv_window_conn", "recv_window", "recv_window_client", "max_conn_client", "disable_mtu_discovery")]},
@@ -2132,69 +2132,69 @@ TABLE = [
      "link": "https://sing-box.sagernet.org/changelog/#1140",
      "note": "Hysteria v1 调优字段 1.14.0 废弃、1.16.0 移除，改用共享的 quic 参数（changelog 1.14.0 注 23）。"
              "内核不会告警（option/hysteria.go 标 schema:\"omit\" 但 deprecated/constants.go 无对应 Note），deprecated 页也未列"},
-    {"id": "tun_removed_fields", "match": {"kind": "key", "paths": ["inbounds[type=tun].endpoint_independent_nat", "inbounds[type=tun].gso"]},
+    {"id": "tun_removed_fields", "action": "删掉即可", "match": {"kind": "key", "paths": ["inbounds[type=tun].endpoint_independent_nat", "inbounds[type=tun].gso"]},
      "deprecated_in": "1.11.0", "removed_in": "1.13.0", "tier": "deprecated", "stage": "none",
      "warn": None, "fix": "report",
      "link": "https://sing-box.sagernet.org/configuration/inbound/tun/",
      "note": "源码标 Deprecated: removed，内核静默忽略、不会告警；tun 文档仍把 endpoint_independent_nat 列为有效字段。删掉即可"},
     # 行为变更（notice）
-    {"id": "query_type_ip_version_semantics", "match": {"kind": "usage", "name": "query_type_or_ip_version"},
+    {"id": "query_type_ip_version_semantics", "action": "确认内部解析也受它影响是想要的", "match": {"kind": "usage", "name": "query_type_or_ip_version"},
      "deprecated_in": "1.14.0", "removed_in": None, "tier": "notice", "stage": "none",
      "warn": None, "fix": "report",
      "link": "https://sing-box.sagernet.org/migration/#ip_version-and-query_type-behavior-changes-in-dns-rules",
      "note": "1.14.0 起 query_type / ip_version 也作用于内部解析（resolve 动作、direct 出站的 ICMP、endpoint 自身地址…），"
              "且与遗留地址过滤 / strategy / rule_set_ip_cidr_accept_empty 不能共存于同一份 DNS 配置"},
     # ---- 1.12.0 排期到 1.14.0、内核 1.14.0 仍在 Start() 阶段告警 ----
-    {"id": "dns_rule_outbound", "match": {"kind": "key", "paths": ["dns.rules[**].outbound"]},
+    {"id": "dns_rule_outbound", "action": "改用出站的 domain_resolver", "match": {"kind": "key", "paths": ["dns.rules[**].outbound"]},
      "deprecated_in": "1.12.0", "removed_in": "1.14.0", "tier": "deprecated", "stage": "start",
      "warn": r"`outbound` DNS rule", "fix": "report",
      "link": "https://sing-box.sagernet.org/migration/#migrate-outbound-dns-rule-items-to-domain-resolver",
      "note": "DNS 规则的 outbound 项 1.12.0 废弃，改用出站的 domain_resolver 拨号字段"},
-    {"id": "outbound_domain_strategy", "match": {"kind": "key", "paths": ["outbounds[].domain_strategy", "endpoints[].domain_strategy"]},
+    {"id": "outbound_domain_strategy", "action": "改为 domain_resolver: {server, strategy}", "match": {"kind": "key", "paths": ["outbounds[].domain_strategy", "endpoints[].domain_strategy"]},
      "deprecated_in": "1.12.0", "removed_in": "1.14.0", "tier": "deprecated", "stage": "start",
      "warn": r"domain[ _]strategy", "fix": "report",
      "link": "https://sing-box.sagernet.org/migration/#migrate-outbound-domain-strategy-option-to-domain-resolver",
      "note": "出站拨号字段 domain_strategy 1.12.0 废弃，改为 domain_resolver: {\"server\": ..., \"strategy\": ...}"},
-    {"id": "missing_domain_resolver", "match": {"kind": "usage", "name": "missing_domain_resolver"},
+    {"id": "missing_domain_resolver", "action": "给出站加 domain_resolver，或设 route.default_domain_resolver", "match": {"kind": "usage", "name": "missing_domain_resolver"},
      "deprecated_in": "1.12.0", "removed_in": "1.14.0", "tier": "deprecated", "stage": "start",
      "warn": r"missing domain resolver|domain_resolver", "fix": "report",
      "link": "https://sing-box.sagernet.org/migration/#migrate-outbound-domain-strategy-option-to-domain-resolver",
      "note": "出站 server 是域名却既没有 domain_resolver、route 也没有 default_domain_resolver —— 1.12.0 起靠隐式默认解析是废弃行为"},
     # ---- 1.10–1.13 已被内核拒绝的：进表只为给链接与解释，removed 的定性来自 check 档的 FATAL ----
-    {"id": "legacy_dns_servers", "match": {"kind": "key", "paths": ["dns.servers[].address"]},
+    {"id": "legacy_dns_servers", "action": "改为 type + server 的新格式", "match": {"kind": "key", "paths": ["dns.servers[].address"]},
      "deprecated_in": "1.12.0", "removed_in": "1.14.0", "tier": "deprecated", "stage": "new",
      "warn": r"legacy DNS server", "fix": "report",
      "link": "https://sing-box.sagernet.org/migration/#migrate-to-new-dns-server-formats",
      "note": "旧式 DNS 服务器（address 字段）1.12.0 废弃、1.14.0 移除，改为 type + server 的新格式"},
-    {"id": "legacy_special_outbounds", "match": {"kind": "key", "paths": ["outbounds[type=block]", "outbounds[type=dns]"]},
+    {"id": "legacy_special_outbounds", "action": "改用规则动作 reject / hijack-dns", "match": {"kind": "key", "paths": ["outbounds[type=block]", "outbounds[type=dns]"]},
      "deprecated_in": "1.11.0", "removed_in": "1.13.0", "tier": "deprecated", "stage": "new",
      "warn": r"legacy special outbound", "fix": "report",
      "link": "https://sing-box.sagernet.org/migration/#migrate-legacy-special-outbounds-to-rule-actions",
      "note": "block / dns 特殊出站 1.11.0 废弃，改用规则动作 reject / hijack-dns"},
-    {"id": "legacy_inbound_fields", "match": {"kind": "key", "paths": [
+    {"id": "legacy_inbound_fields", "action": "改用路由规则动作 sniff / resolve", "match": {"kind": "key", "paths": [
         "inbounds[].sniff", "inbounds[].sniff_override_destination", "inbounds[].sniff_timeout", "inbounds[].domain_strategy", "inbounds[].udp_disable_domain_unmapping"]},
      "deprecated_in": "1.11.0", "removed_in": "1.13.0", "tier": "deprecated", "stage": "new",
      "warn": r"legacy inbound fields", "fix": "report",
      "link": "https://sing-box.sagernet.org/migration/#migrate-legacy-inbound-fields-to-rule-actions",
      "note": "入站上的 sniff / domain_strategy 等字段 1.11.0 废弃，改用路由规则动作 sniff / resolve"},
-    {"id": "destination_override", "match": {"kind": "key", "paths": ["outbounds[type=direct].override_address", "outbounds[type=direct].override_port"]},
+    {"id": "destination_override", "action": "改用 route 动作的 override_address / override_port", "match": {"kind": "key", "paths": ["outbounds[type=direct].override_address", "outbounds[type=direct].override_port"]},
      "deprecated_in": "1.11.0", "removed_in": "1.13.0", "tier": "deprecated", "stage": "new",
      "warn": r"override_address|override_port|destination override", "fix": "report",
      "link": "https://sing-box.sagernet.org/migration/#migrate-destination-override-fields-to-route-options",
      "note": "direct 出站的 override_address / override_port 1.11.0 废弃，改用 route 动作的同名选项"},
-    {"id": "wireguard_outbound", "match": {"kind": "key", "paths": ["outbounds[type=wireguard]"]},
+    {"id": "wireguard_outbound", "action": "改为 endpoints[] 的 wireguard 端点", "match": {"kind": "key", "paths": ["outbounds[type=wireguard]"]},
      "deprecated_in": "1.11.0", "removed_in": "1.13.0", "tier": "deprecated", "stage": "new",
      "warn": r"WireGuard outbound", "fix": "report",
      "link": "https://sing-box.sagernet.org/migration/#migrate-wireguard-outbound-to-endpoint",
      "note": "WireGuard 出站 1.11.0 废弃，改为 endpoints[] 里的 wireguard 端点"},
-    {"id": "tun_address_fields", "match": {"kind": "key", "paths": [
+    {"id": "tun_address_fields", "action": "改为 address / route_address / route_exclude_address", "match": {"kind": "key", "paths": [
         "inbounds[type=tun].%s" % f for f in ("inet4_address", "inet6_address", "inet4_route_address", "inet6_route_address",
                                               "inet4_route_exclude_address", "inet6_route_exclude_address")]},
      "deprecated_in": "1.10.0", "removed_in": "1.12.0", "tier": "deprecated", "stage": "new",
      "warn": r"legacy tun address fields", "fix": "report",
      "link": "https://sing-box.sagernet.org/migration/#tun-address-fields-are-merged",
      "note": "tun 的 inet4_*/inet6_* 地址字段 1.10.0 合并为 address / route_address / route_exclude_address，1.12.0 移除"},
-    {"id": "ipcidr_match_source", "match": {"kind": "key", "paths": ["dns.rules[**].rule_set_ipcidr_match_source", "route.rules[**].rule_set_ipcidr_match_source"]},
+    {"id": "ipcidr_match_source", "action": "改名为 rule_set_ip_cidr_match_source", "match": {"kind": "key", "paths": ["dns.rules[**].rule_set_ipcidr_match_source", "route.rules[**].rule_set_ipcidr_match_source"]},
      "deprecated_in": "1.10.0", "removed_in": "1.11.0", "tier": "deprecated", "stage": "new",
      "warn": r"rule_set_ipcidr_match_source", "fix": "report",
      "link": "https://sing-box.sagernet.org/deprecated/#match-source-rule-items-are-renamed",
@@ -2666,11 +2666,11 @@ try:
     cfg = json.load(open(cfg_path))
 except Exception:
     cfg = None
-rows = []            # {path, tier, src:set, desc, url, snippet, eid}
+rows = []            # {path, tier, src:set, desc, url, snippet, eid, action}
 RANK = {"removed": 3, "deprecated": 2, "notice": 1}
 SRC_ORDER = ("check", "schema", "table", "run")
 
-def add(path, tier, src, desc, url, snippet=None, eid=None):
+def add(path, tier, src, desc, url, snippet=None, eid=None, action=None):
     # 去重键是路径；没有路径的行（表外的 WARN / FATAL 原文，path 为 "-"）以原文为键，
     # 否则两条不同的表外 WARN 会被判成同一条，第二条起静默丢失。
     for r in rows:
@@ -2679,9 +2679,10 @@ def add(path, tier, src, desc, url, snippet=None, eid=None):
             if RANK[tier] > RANK[r["tier"]]:
                 r["tier"] = tier
             if src == "table":          # 表的说明与链接覆盖 A / B 的
-                r["desc"], r["url"], r["snippet"], r["eid"] = desc, url, snippet, eid
+                r["desc"], r["url"], r["snippet"], r["eid"], r["action"] = desc, url, snippet, eid, action
             return r
-    r = {"path": path, "tier": tier, "src": set([src]), "desc": desc, "url": url, "snippet": snippet, "eid": eid}
+    r = {"path": path, "tier": tier, "src": set([src]), "desc": desc, "url": url, "snippet": snippet, "eid": eid,
+         "action": action}
     rows.append(r)
     return r
 
@@ -2695,7 +2696,7 @@ if isinstance(cfg, dict):
             snippet, extra = snippet_for(e, hit)
             if extra:
                 note += "。" + extra
-            add(hit[0], e["tier"], "table", note, e["link"], snippet, e["id"])
+            add(hit[0], e["tier"], "table", note, e["link"], snippet, e["id"], e["action"])
 
 def entry_for(text):
     for e in TABLE:
@@ -2707,7 +2708,8 @@ def attach_warn(text, src, tier, url):
     """把一行内核 WARN / FATAL 贴到表条目命中的路径上。"""
     e = entry_for(text)
     if e is None:
-        add("-", tier, src, text, url)
+        add("-", tier, src, text, url, None, None,
+            "内核拒绝，看原文" if tier == "removed" else "内核告警但迁移表未收录，按链接迁移（表该补条目了）")
         return
     mine = [r for r in rows if r["eid"] == e["id"]]
     if not mine and e["id"] == "legacy_address_filter":
@@ -2719,7 +2721,7 @@ def attach_warn(text, src, tier, url):
         for r in mine:
             add(r["path"], tier, src, r["desc"], r["url"])
     else:
-        add(e["id"], tier, src, e["note"], e["link"], None, e["id"])
+        add(e["id"], tier, src, e["note"], e["link"], None, e["id"], e["action"])
 
 # A / B 路的原始行。B（schema）先于 A（check）处理：A 的「unknown field X」要贴到
 # 带完整路径的那一行上，而那一行可能只有 B 给得出（表外的键 C 路没有）。
@@ -2735,15 +2737,17 @@ for line in open(raw_path):
 raw_rows.sort(key=lambda f: 0 if f[1] == "schema" else 1)
 for tier, src, path, desc, url in raw_rows:
     if src == "schema":
-        add(path, "deprecated", "schema", desc, url)
+        add(path, "deprecated", "schema", desc, url, None, None, "核对拼写；schema 不认识的键多半已废弃或移除，查 deprecated 页")
     elif tier == "removed" and path not in ("-", ""):
         # unknown field X：贴到叶子名等于 X 的路径上；没有就单独成行
         mine = [r for r in rows if r["path"].rsplit(".", 1)[-1].split("[", 1)[0] == path]
         if mine:
             for r in mine:
                 add(r["path"], "removed", "check", r["desc"], r["url"])
+                if r["eid"] is None:
+                    r["action"] = "内核已不认识这个字段，删掉或按 deprecated 页迁移"
         else:
-            add(path, "removed", "check", desc, url)
+            add(path, "removed", "check", desc, url, None, None, "内核已不认识这个字段，删掉或按 deprecated 页迁移")
     elif tier == "removed":
         attach_warn(desc, "check", "removed", url)
     else:
@@ -2779,9 +2783,7 @@ def natkey(p):
 rows.sort(key=lambda r: (-RANK[r["tier"]], r["path"] in ("-", ""), natkey(r["path"])))
 for r in rows:
     src = "+".join(x for x in SRC_ORDER if x in r["src"])
-    out = [r["tier"], src, r["path"], r["desc"], r["url"]]
-    if r["snippet"]:
-        out.append(enc(r["snippet"]))
+    out = [r["tier"], src, r["path"], r["desc"], r["url"], enc(r["snippet"]), r["action"] or ""]
     sys.stdout.write("\t".join(out) + "\n")
 PY
 }
@@ -3119,11 +3121,10 @@ _cfg_audit_report() {
   local cfg="$1" runlog="${2:-}" complete="${3:-0}"
   local rows; rows=$(mktmp)
 
-  printf '配置审查：%s\n' "$cfg"
   local kver
   kver=$("$BIN" version 2>/dev/null | head -1 | awk '{print $3}')
   [ -n "$kver" ] || die "内核不可用（${BIN} 问不出版本号），审查无法进行"
-  info "内核 ${kver}"
+  printf '配置审查：%s   内核 %s\n' "$cfg" "$kver"
   # 迁移表只覆盖到 CFG_TABLE_COVERS 那个 minor。按 minor 比（1.14.9 不提示、1.15.0 提示）：
   # 把 patch 位抹成 0 再用三段的 ver_gt。只提示，退出码不看它。
   local kmm; kmm=$(printf '%s' "$kver" | cut -d. -f1,2)
@@ -3135,42 +3136,136 @@ _cfg_audit_report() {
   _cfg_audit "$cfg" "$runlog" "$complete" >"$rows" \
     || die "审查没做成（读不到 ${cfg}，或内核跑不起来）—— 这不代表配置没问题"
 
-  local n_removed=0 n_deprecated=0 n_notice=0
-  local tier source path desc url snippet
-  while IFS="$(printf '\t')" read -r tier source path desc url snippet; do
-    [ -n "$tier" ] || continue
-    case "$tier" in
-      removed)    n_removed=$((n_removed + 1)) ;;
-      deprecated) n_deprecated=$((n_deprecated + 1)) ;;
-      notice)     n_notice=$((n_notice + 1)) ;;
-    esac
-    printf '  [%s/%s] %s\n' "$tier" "$source" "$path"
-    printf '      %s\n' "$desc"
-    [ -n "$url" ] && printf '      迁移：%s\n' "$url"
-    # snippet 型条目：片段按 v1.14.0 源码语义推导，没做过行为差分（需要旧内核二进制），
-    # 所以只打出来，不落地。行内的换行/制表符是 _cfg_audit 用 \\n \\t 转义过的。
-    if [ -n "${snippet:-}" ]; then
-      printf '      建议写法（按 v1.14.0 源码语义推导，未经行为验证，需人工核对）：\n'
-      printf '%b\n' "$snippet" | sed 's/^/        /'
-    fi
-  done <"$rows"
+  # 渲染交给 python：同一问题的多处合并成表格一行（21 条 download_detour 是一行「21 处」），
+  # 表格四列只放看得懂的东西——结论 / 在哪 / 谁发现的 / 怎么办；原委、链接、建议片段按编号
+  # 放到「详情」。列宽按东亚宽度对齐，bash 里算不了。
+  local tbl det sum; tbl=$(mktmp); det=$(mktmp); sum=$(mktmp)
+  python3 - "$rows" "$tbl" "$det" "$sum" <<'PY'
+import re, sys, unicodedata
+rows_path, tbl_path, det_path, sum_path = sys.argv[1:5]
+TIER = {"removed": "起不来", "deprecated": "将来会坏", "notice": "提示"}
+SRC = (("check", "check"), ("schema", "schema"), ("table", "表"), ("run", "run"))
 
-  if [ "$n_removed" -gt 0 ]; then
-    # removed 档 = 内核拒绝：unknown field 是已移除的字段，其余 FATAL（无效值、引用不存在的 tag…）
-    # 也在这一档——退出码 1 的语义是「配置起不来」，不是「有已移除字段」
-    bad "${n_removed} 项被本版本内核拒绝（已移除的字段或无效值），配置起不来"
-    return 1
-  fi
-  if [ "$n_deprecated" -gt 0 ]; then
-    warn "${n_deprecated} 项已废弃：现在能跑，将来会坏"
-    return 2
-  fi
-  # notice 是行为变更提示，不是废弃：配置照旧合法，退出码不看它
-  if [ "$n_notice" -gt 0 ]; then
-    ok "没有废弃项，也没有未知键（${n_notice} 条行为变更提示见上）"
-  else
-    ok "没有废弃项，也没有未知键"
-  fi
+def dec(sn):
+    out, i = [], 0
+    while i < len(sn):
+        c = sn[i]
+        if c == "\\" and i + 1 < len(sn):
+            n = sn[i + 1]
+            out.append({"n": "\n", "t": "\t", "\\": "\\"}.get(n, "\\" + n)); i += 2
+        else:
+            out.append(c); i += 1
+    return "".join(out)
+
+def w(t):
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in t)
+def pad(t, n):
+    return t + " " * max(0, n - w(t))
+
+rows = []
+for line in open(rows_path):
+    f = line.rstrip("\n").split("\t")
+    if len(f) < 3:
+        continue
+    while len(f) < 7:
+        f.append("")
+    rows.append(dict(tier=f[0], src=f[1], path=f[2], desc=f[3], url=f[4], snippet=dec(f[5]), action=f[6]))
+
+# 同一问题合并：结论 + 原委 + 链接 + 怎么办 相同就是同一项
+groups = []
+for r in rows:
+    key = (r["tier"], r["desc"], r["url"], r["action"])
+    g = next((g for g in groups if g["key"] == key), None)
+    if g is None:
+        g = {"key": key, "tier": r["tier"], "desc": r["desc"], "url": r["url"], "action": r["action"],
+             "paths": [], "src": set(), "snips": []}
+        groups.append(g)
+    g["paths"].append(r["path"])
+    g["src"].update(x for x in r["src"].split("+") if x)
+    if r["snippet"]:
+        g["snips"].append((r["path"], r["snippet"]))
+
+def natkey(p):
+    return [int(x) if x.isdigit() else x for x in re.split(r"(\d+)", p)]
+
+def squeeze(paths):
+    """路径列：≥3 处且只差一个下标、下标连续 → prefix[a…b]suffix；≤3 处全列；再多列两个加「等 N 处」。"""
+    paths = sorted(set(paths), key=natkey)
+    if len(paths) >= 3:
+        m = [re.match(r"^(.*?)\[(\d+)\](.*)$", p) for p in paths]
+        if all(m) and len(set(x.group(1) for x in m)) == 1 and len(set(x.group(3) for x in m)) == 1:
+            idx = sorted(int(x.group(2)) for x in m)
+            if idx == list(range(idx[0], idx[0] + len(idx))):
+                return "%s[%d…%d]%s" % (m[0].group(1), idx[0], idx[-1], m[0].group(3)), True
+    if len(paths) <= 3:
+        return " ".join(paths), False
+    return "%s %s 等 %d 处" % (paths[0], paths[1], len(paths)), False
+
+lines = []
+for i, g in enumerate(groups, 1):
+    where, _ = squeeze(g["paths"])
+    n = len(set(g["paths"]))
+    act = g["action"] or ""
+    if n > 1:
+        act = (act + "（%d 处）" % n) if act else "%d 处" % n
+    lines.append([str(i), TIER.get(g["tier"], g["tier"]), where,
+                  " ".join(name for k, name in SRC if k in g["src"]), act])
+
+with open(tbl_path, "w") as out:
+    if lines:
+        head = ["#", "结论", "在哪", "谁发现的", "怎么办"]
+        widths = [max(w(x[c]) for x in [head] + lines) for c in range(5)]
+        out.write(" " + "  ".join(pad(head[c], widths[c]) for c in range(5)).rstrip() + "\n")
+        for x in lines:
+            out.write(" " + "  ".join(pad(x[c], widths[c]) for c in range(5)).rstrip() + "\n")
+
+with open(det_path, "w") as out:
+    if groups:
+        out.write("详情\n")
+    for i, g in enumerate(groups, 1):
+        out.write(" %d  %s\n" % (i, g["desc"]))
+        if g["url"]:
+            out.write("    %s\n" % g["url"])
+        paths = sorted(set(g["paths"]), key=natkey)
+        if len(paths) > 1:
+            out.write("    位置：%s\n" % " ".join(paths))
+        for path, sn in g["snips"]:
+            out.write("    建议写法（按 v1.14.0 源码语义推导，未经行为验证，需人工核对）%s：\n"
+                      % ("，针对 " + path if len(paths) > 1 else ""))
+            for l in sn.split("\n"):
+                out.write("      %s\n" % l)
+
+cnt = {"removed": 0, "deprecated": 0, "notice": 0}
+spots = {"removed": 0, "deprecated": 0, "notice": 0}
+for g in groups:
+    cnt[g["tier"]] += 1
+    spots[g["tier"]] += len(set(g["paths"]))
+def n_(tier):
+    return "%d 项" % cnt[tier] + ("（共 %d 处）" % spots[tier] if spots[tier] > cnt[tier] else "")
+with open(sum_path, "w") as out:
+    if cnt["removed"]:
+        out.write("bad\t%s起不来：内核拒绝这份配置（已移除的字段或无效值）\n" % n_("removed"))
+    elif cnt["deprecated"]:
+        tail = "，%d 条提示" % cnt["notice"] if cnt["notice"] else ""
+        out.write("warn\t%s将来会坏：现在能跑，下个大版本内核会拒收%s\n" % (n_("deprecated"), tail))
+    elif cnt["notice"]:
+        out.write("ok\t没有废弃项，也没有未知键（%d 条提示见上）\n" % cnt["notice"])
+    else:
+        out.write("ok\t没有废弃项，也没有未知键\n")
+PY
+  [ -s "$tbl" ] && { echo; cat "$tbl"; }
+  echo
+  local level msg
+  IFS="$(printf '\t')" read -r level msg <"$sum"
+  case "$level" in bad) bad "$msg" ;; warn) warn "$msg" ;; *) ok "$msg" ;; esac
+  [ -s "$det" ] && { echo; cat "$det"; }
+
+  # 退出码按档位：只要有 removed 就 1，否则有 deprecated 就 2；notice 不算
+  local n_removed n_deprecated
+  n_removed=$(awk -F'\t' '$1=="removed"{n++} END{print n+0}' "$rows")
+  n_deprecated=$(awk -F'\t' '$1=="deprecated"{n++} END{print n+0}' "$rows")
+  [ "$n_removed" -gt 0 ] && return 1
+  [ "$n_deprecated" -gt 0 ] && return 2
   return 0
 }
 
