@@ -1,6 +1,6 @@
 # 维护者手册
 
-改代码的人看的。用户手册在 [script-usage.md](script-usage.md)，方案与原理在 [best-practices.md](best-practices.md)，
+改代码的人看的。操作手册是 `manual-*.md`（README 第 4 节有表），方案与原理在 [best-practices.md](best-practices.md)，
 每轮改动的设计记录见 README 第 4 节。
 
 ## 验收
@@ -18,17 +18,16 @@
 
 - **sdlc-kit 的 `sdlc-doc`**（通用规则 D1–D10）：引用了已删除的路径、订正贴在旁边不折回正文、
   两处逐字重复的段落、手册超过 120 行或混进原理、设计记录没标 `status`、`covers` 点名的文件
-  改了而文档没动（改提交时提醒）。`.claude/sdlc.json` 的 `docs.guard` 已配好；等这台机器上的
-  sdlc-kit 更到带 `sdlc-doc` 的版本，再把 `sdlc-doc lint` 注册进 `check.commands`。
-- **`tests/docs.test.sh`**（本项目特有的事实，通用工具不可能知道）：分发表里的子命令、
-  `config audit` 的旗标、README 仓库结构与文档索引、自检项数与测试文件数、`best-practices.md`
-  的配置全文（必须与 `config/config.example.json` 逐字相同）、三份手册的目录、手册里不许出现
-  `singbox.sh:行号`。`sdlc-doc` 上岗后，计数那一项改成 `<!-- sdlc-doc:n tests/*.test.sh -->` 块交给 D2。
+  改了而文档没动（改提交时提醒）。`sdlc-doc lint` 已注册为 `check.commands` 的 `doc` 项，
+  `sdlc-check` 会跑它。
+- **`tests/docs.test.sh`**（本项目特有的事实，通用工具不可能知道）：分发表里的子命令要出现在
+  README 命令表、内置 help 和某份手册里；`config audit` 的旗标；README 仓库结构与文档索引；自检项数；
+  `best-practices.md` 的配置全文（必须与 `config/config.example.json` 逐字相同）；README 与
+  best-practices 的目录；手册里不许出现 `singbox.sh:行号`。测试文件数是 CLAUDE.md 里的 `sdlc-doc:n` 块，归 D2。
 
-文档的 `kind`：5 份设计记录是 `spec`（`status: shipped`），`best-practices.md` 是 `design`，
-`covers` 写的是「改了这些文件就该回看这份文档」。`script-usage.md` 与本文还没标 `kind: manual`——
-D4 要求手册 ≤ 120 行、四个固定 H2（前提 / 步骤 / 出错了看哪 / 深入阅读）、不许有原理段，
-`script-usage.md` 得先按任务拆成几份才够格，那是逐份跑 `/sdlc-kit:tidy` 的事。
+文档的 `kind`：5 份操作手册是 `manual`（D4：≤ 120 行、四个固定 H2「前提 / 步骤 / 出错了看哪 / 深入阅读」、
+不许有原理段——原理写进 `best-practices.md` 第 9 节，手册只留链接）；5 份设计记录是 `spec`（`status: shipped`）；
+`best-practices.md` 是 `design`。`covers` 写的是「改了这些文件就该回看这份文档」。本文没标 kind。
 
 ## 迁移表怎么维护
 

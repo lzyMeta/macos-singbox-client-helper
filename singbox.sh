@@ -2050,7 +2050,7 @@ CFG_TABLE_COVERS=1.14.0
 
 # _cfg_pylib —— 迁移表 + 路径谓词 + 片段生成，_cfg_audit / _cfg_migrate / _cfg_whitelist_diff /
 # _cfg_apply 四处内联 python 共用。<<'PY' 不展开，表是纯 python 字面量，consumer 用
-# exec(open(sys.argv[1]).read()) 载入。表的维护方法见 docs/script-usage.md「迁移表怎么维护」。
+# exec(open(sys.argv[1]).read()) 载入。表的维护方法见 docs/maintaining.md「迁移表怎么维护」。
 _cfg_pylib() {
   cat <<'PY'
 import json, re, sys
@@ -2059,7 +2059,7 @@ import json, re, sys
 # 所有条目钉在 sing-box **v1.14.0** git tag：docs/deprecated.md、docs/migration.md、
 # docs/changelog.md、experimental/deprecated/constants.go、option/*.go 的 schema:"omit"。
 # 网站是活的（首页已是 1.15.0-alpha），内核是死的——只按 tag 核对，网站只做人工旁证。
-# 维护：内核出新 minor 时按 docs/script-usage.md「迁移表怎么维护」更新条目，并改 bash 侧的
+# 维护：内核出新 minor 时按 docs/maintaining.md「迁移表怎么维护」更新条目，并改 bash 侧的
 # CFG_TABLE_COVERS。链接一律写整段字面量，不拼接——tests 里的锚点核对是 grep 源码做的。
 
 # 每条：id / action（报告「怎么办」那一列的一句话）/ match（key：JSON 路径模式；usage：具名谓词）/ deprecated_in / removed_in /

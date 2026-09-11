@@ -255,7 +255,7 @@ fixture；`tests/install.test.sh`（验收 1–4）、`selfcheck.test.sh`（15�
 
 **单元 C — 发布侧与文档**
 `.github/workflows/release.yml`、`VERSION` → `1.2.0`、README / CLAUDE.md /
-`docs/script-usage.md` / `docs/safe-update.md`。
+`docs/script-usage.md` / `docs/safe-update.md`。 <!-- doc:gone -->
 
 ### 与 spec 的三处偏差
 
@@ -277,7 +277,7 @@ fixture；`tests/install.test.sh`（验收 1–4）、`selfcheck.test.sh`（15�
    禁了），为这个边缘场景不值当。默认 `--prefix /usr/local` 下无实际影响。
    （这一条的原始记述把机制讲错了，`/sdlc-kit:review` 指出后改正。）
 
-3. **`docs/script-usage.md` 第 1 节也有同一段 `~/bin` 手抄命令**，spec 只点名了
+3. **`docs/script-usage.md` 第 1 节也有同一段 `~/bin` 手抄命令**，spec 只点名了 <!-- doc:gone -->
    `README.md` 2.5。同一件事说了两遍，只改一处就会自相矛盾，一并改了。
    另外 `CLAUDE.md` 原先写「四个测试文件」而实际已有六个，本次加到八个，顺手修正。
 
@@ -321,7 +321,7 @@ sha256 不变、且日志里同时有「sha256 不匹配」与「已是最新」
 
 `v1.2.0` 这个 tag **没有推**，按 spec 归 lzyMeta 手工做。在那之前阶段 S 永远走
 「取不到新版 → warn → 照升内核」，该路径有验收第 8 条覆盖。
-「自更新从 `v1.2.1` 起才真正闭环」已写进 `docs/script-usage.md`，发版时须进 release notes。
+「自更新从 `v1.2.1` 起才真正闭环」已写进 `docs/script-usage.md`，发版时须进 release notes。 <!-- doc:gone -->
 
 `release.yml` 的两条手工核对未做（需要真的推 tag），写进 PR 描述：
 tag 与 `VERSION` 一致时能建出带 `singbox.sh` asset 的 release；故意推一个不一致的 tag 时红。

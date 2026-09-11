@@ -11,7 +11,7 @@
 ## 目录
 
 - [1. 这是什么](#1-这是什么)
-- [2. 下载与安装](#2-下载与安装)
+- [2. 快速开始](#2-快速开始)
 - [3. 管理脚本 singbox.sh](#3-管理脚本-singboxsh)
 - [4. 文档](#4-文档)
 - [5. 仓库结构](#5-仓库结构)
@@ -62,91 +62,18 @@ App → utun 虚拟网卡 → 嗅探（还原域名）→ DNS 劫持 → 路由�
 
 ---
 
-## 2. 下载与安装
-
-### 2.1 获取
+## 2. 快速开始
 
 ```bash
 git clone https://github.com/lzyMeta/macos-singbox-client-helper.git
-cd macos-singbox-client-helper
-chmod +x singbox.sh
+cd macos-singbox-client-helper && chmod +x singbox.sh
+cp config/config.example.json config.json && $EDITOR config.json   # 换掉 7 个 YOUR_ 占位符
+./singbox.sh -n install --config ./config.json                     # 空跑
+./singbox.sh install --config ./config.json                        # 真装，要管理员密码
 ```
 
-从浏览器下载 zip 的话，先解除隔离标记：
-
-```bash
-xattr -dr com.apple.quarantine .
-```
-
-只要脚本、不要仓库的话，直接取最新 release 的那一份：
-
-```bash
-curl -fsSLO https://github.com/lzyMeta/macos-singbox-client-helper/releases/latest/download/singbox.sh
-chmod +x singbox.sh
-```
-
-装完之后它会自己保持更新（见 [2.5](#25-singbox-命令与脚本自更新)），配置模板仍需从仓库取。
-
-### 2.2 填写配置
-
-```bash
-cp config/config.example.json config.json
-$EDITOR config.json
-```
-
-需要替换的占位符：
-
-| 占位符 | 说明 |
-|---|---|
-| `YOUR_VPSTRANS_ADDR` | vpstrans 的 IP 或域名（两条节点都连它） |
-| `YOUR_SNI` | REALITY 的 SNI，与服务端 dest 一致 |
-| `YOUR_PUBLIC_KEY` | 服务端 REALITY 公钥 |
-| `YOUR_SHORT_ID` | 服务端签发的 short ID |
-| `YOUR_UUID_VPSTRANS` | 走机房出口的 UUID |
-| `YOUR_UUID_VPSRE` | 走住宅出口的 UUID |
-| `YOUR_CLASH_SECRET` | Clash 面板的访问口令，换成一串随机字符 |
-
-两个 UUID 必须是标准的 `8-4-4-4-12` 格式。脚本会在安装的第一步检查是否还有未替换的占位符。
-
-### 2.3 安装
-
-```bash
-./singbox.sh -n install --config ./config.json    # 先空跑，看会做什么
-./singbox.sh install --config ./config.json       # 真正执行
-```
-
-需要管理员密码：TUN 建虚拟网卡、改路由表必须 root。
-
-安装流程共八步：环境检查 → 装内核 → 装 `singbox` 命令 → **系统层准备** → 放置配置 → 静态校验 → 前台试跑 → 装服务 → 自动验证。
-
-> **第四步不能跳。** 关闭 IPv6、把系统 DNS 指向非局域网地址、退掉其他 VPN——这三件事配置文件管不了，不做的话后面验证一定过不去，而症状完全不指向真正的原因。
-
-### 2.4 装完之后
-
-```bash
-./singbox.sh status     # 服务、TUN 路由、监听端口
-./singbox.sh verify     # 完整验证清单
-./singbox.sh rules      # 验证规则集 URL 是否可达
-```
-
-还有一件脚本做不了的事：**关闭浏览器的内置 DoH**。Chrome 在 `chrome://settings/security` 关闭「使用安全 DNS」，Firefox 在 `about:config` 把 `network.trr.mode` 设为 `5`。不关的话它会绕过系统 DNS，典型症状是 Google 打不开而别的站正常。
-
-### 2.5 `singbox` 命令与脚本自更新
-
-**这一步 `install` 已经替你做完了。** 第三步会把脚本自己装到
-`/usr/local/bin/singbox`（跟随 `--prefix`），0755，之后全局可用 `singbox <命令>`。
-选这个目录是因为它已经在所有 shell 的默认 PATH 里 —— **不用改 `~/.zshrc`**。
-目标位置原本有别的内容时，旧的会先存成 `singbox.prev`。
-
-装好之后 `update` 会连脚本一起升：它先查本仓库的 latest release，远端版本比本地
-`VERSION` **严格更高**才下载、校验 sha256、`bash -n` 过一遍、替换掉
-`/usr/local/bin/singbox`，然后接着升内核。先脚本后内核，是因为出问题的往往是升级
-逻辑本身。取不到新版就只 warn 一句照升内核 —— 脚本更新没有权力挡住你真正要做的事。
-
-`rollback` 会把内核与 `singbox` 命令一起退回上一版，`uninstall` 会把它们清掉。
-
-> 之前手工 `cp` 到 `~/bin/singbox` 的旧版本，新的 `install` 不会去找它、不会删它、
-> 也不会警告它。**自己删掉即可**，否则 PATH 里谁在前面谁生效，你会用着一份永不更新的副本。
+装完 `singbox` 命令全局可用（`/usr/local/bin/singbox`），`update` 会连它一起升级。
+占位符怎么填、八个安装步骤各做什么、装完还要关浏览器 DoH——见 **[首次安装](docs/manual-install.md)**。
 
 ---
 
@@ -173,7 +100,7 @@ $EDITOR config.json
 - **`edit`** 改配置走"校验 → 备份 → 重启"，两关都过才写入，不过则保留你的修改到临时文件。
 - **`dns`** 查看与切换系统 DNS。停服后 `1.1.1.1` 的明文查询在国内同样会被污染，所以 `stop` / `disable` / `uninstall` 会询问是否交回 DHCP。
 
-完整说明见 **[docs/script-usage.md](docs/script-usage.md)**。
+每个命令怎么用、出错看哪，见第 4 节的五份操作手册。
 
 ### 脚本遵循的几条规矩
 
@@ -193,10 +120,21 @@ $EDITOR config.json
 
 ## 4. 文档
 
+**操作手册**（只讲怎么做，每份不超过 120 行）：
+
+| 手册 | 覆盖的命令 |
+|---|---|
+| [首次安装](docs/manual-install.md) | `install` `sysprep` |
+| [日常运行](docs/manual-daily.md) | `status` `start` `stop` `restart` `enable` `disable` `dns` `logs` |
+| [检查与排查](docs/manual-check.md) | `verify` `syscheck` `rules` `debug` `doctor` |
+| [改配置与配置审查](docs/manual-config.md) | `edit` `config`（含 `config audit`） |
+| [升级、回退与卸载](docs/manual-update.md) | `update` `rollback` `mirror` `uninstall` |
+
+**方案与原理**：
+
 | 文档 | 读它干什么 |
 |---|---|
-| **[docs/script-usage.md](docs/script-usage.md)** | 操作手册：每个命令怎么用、输出怎么读、出了错怎么办 |
-| **[docs/best-practices.md](docs/best-practices.md)** | 方案文档：为什么这么配。配置逐字段详解、系统层准备、验证清单、故障排查 |
+| **[docs/best-practices.md](docs/best-practices.md)** | 为什么这么配。配置逐字段详解、系统层准备、验证清单、故障排查、脚本的设计取舍 |
 | [docs/maintaining.md](docs/maintaining.md) | 维护者手册：验收、文档怎么不漂移、迁移表怎么更新 |
 
 `best-practices.md` 里几个容易踩的点：
@@ -247,7 +185,11 @@ $EDITOR config.json
 ├── config/
 │   └── config.example.json    配置模板（占位符）
 └── docs/
-    ├── script-usage.md        操作手册
+    ├── manual-install.md      操作手册：首次安装
+    ├── manual-daily.md        操作手册：日常运行
+    ├── manual-check.md        操作手册：检查与排查
+    ├── manual-config.md       操作手册：改配置与配置审查
+    ├── manual-update.md       操作手册：升级、回退与卸载
     ├── best-practices.md      方案文档与字段详解
     ├── maintaining.md         维护者手册
     ├── safe-update.md         设计记录：update 四阶段 + rollback

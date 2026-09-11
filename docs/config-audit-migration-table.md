@@ -252,7 +252,7 @@ singbox config audit [--config <path>] [--apply] [--deep]
 |---|---|
 | `config/config.example.json` | 顶层加 `"$schema"` |
 | `docs/best-practices.md` | 加 `$schema` 一段；加「系统 DNS 切换与 `dns_mode`」立场一段（含 sing-tun 依据） |
-| `docs/script-usage.md` | `config audit` 一节：四路、`notice`、`--deep`、`SB_LOCKDIR`；**加「迁移表怎么维护」小节**：内核出新 minor 时，按 `git tag` 读那四处源，更新表与 `covers`，网站只做核对 |
+| `docs/script-usage.md` | `config audit` 一节：四路、`notice`、`--deep`、`SB_LOCKDIR`；**加「迁移表怎么维护」小节**：内核出新 minor 时，按 `git tag` 读那四处源，更新表与 `covers`，网站只做核对 | <!-- doc:gone -->
 | `docs/config-audit-and-modernize.md` | 顶部加一行指向本文（`--deep` 语义变更、改写规则从 1 条到 3 条） |
 | `README.md` | `config audit` 那行提 `--deep` |
 | `CLAUDE.md` | 「八个测试文件」→ 九个；提 `SB_LOCKDIR` |
@@ -331,7 +331,7 @@ for i in 1 2 3 4 5; do ./tests/run.sh >/dev/null 2>&1 || echo "第 $i 次红"; d
 | U1 迁移表 | `2b659a4` | `_cfg_pylib`（表 + 路径谓词 + 片段生成）、C 路、按路径去重与来源合并、`notice` 档、`covers` 提示；B 路 walker 认 `allOf` / `unevaluatedProperties` | 18 条断言先红后绿；真内核 1.14.0 对 17 个 probe fixture 的命中矩阵与「问题」表逐行一致；5 个变异全被抓 |
 | U2 沙箱日志档 | `07b8cfc` | `--deep`（`_cfg_deep_runlog`，复用 `--apply` 第 3 道那套沙箱）、`_cfg_audit cfg [runlog]`、第 3 道与 `update` 阶段 1 的 `run.log` 喂 D 路、跨 1.14.0 升级打规则集语义 notice、假内核 `run` 的 `SB_FAKE_RUN_LOG` 后门 | 11 条断言先红（`--deep` 仍 `die 尚未实现`）后绿；关掉 D 路读日志 → 4 条红 |
 | U3 改写层 | `88e958f` | `_cfg_migrate` / `_cfg_whitelist_diff` 共用表里 `fix: auto` 的 3 条；`_cfg_auto_hits`；确认提示逐条列命中数；命中 0 时「无需改写」早退；第 4 道按命中数归零 | 断言 8/9/10 先红（`store_rdrc` 落地后 diff 为空）后绿；跳过 `rename_if_true` → 5 条红；配对检查 + 新增侧检查同时变异 → T10 红 |
-| U4 文档 | 本次 | `config.example.json` 加 `$schema`；`best-practices.md` 的 `$schema` 段与 4.2.1 `dns_mode` 立场；`script-usage.md` 重写 audit 节 + 「迁移表怎么维护」；README、CLAUDE.md、上一轮文档顶部指针 | `sdlc-check` 退 0 |
+| U4 文档 | 本次 | `config.example.json` 加 `$schema`；`best-practices.md` 的 `$schema` 段与 4.2.1 `dns_mode` 立场；`script-usage.md` 重写 audit 节 + 「迁移表怎么维护」；README、CLAUDE.md、上一轮文档顶部指针 | `sdlc-check` 退 0 | <!-- doc:gone -->
 
 ### 待定问题的裁定
 

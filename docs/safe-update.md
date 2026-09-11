@@ -20,7 +20,7 @@ cmd_restart                 # 同上 —— 返回值也没有被检查
 
 `sing-box check -c` 通过、但新内核起不来（或起来了但代理坏了）时，旧二进制已经不在。
 这不是理论风险：内核迭代快，`1.11` 的 DNS 格式不兼容、`domain_strategy` 在 `1.14` 被移除、
-`independent_cache` 在 `1.14` 废弃（`README.md:54`、`docs/script-usage.md:392`）。
+`independent_cache` 在 `1.14` 废弃（`README.md:54`、`docs/script-usage.md:392`）。 <!-- doc:gone -->
 
 **② 判定只有静态一层。** `check -c` 校验的是配置文件的语法与字段合法性。字段还在、语义变了
 （升级风险里的「配置逻辑改变」）它照样过。仓库里已经有一套五步功能验证 `cmd_verify`
@@ -120,7 +120,7 @@ cmd_restart                 # 同上 —— 返回值也没有被检查
 **`.claude/sdlc.json`**：`check.command` 改为 `./singbox-selfcheck.sh && ./tests/run.sh`。
 现在是硬编码两条，再加第三条会一直手工维护下去。
 
-**文档**：`docs/script-usage.md` 的 `update` 一节（`388-394`）、`README.md:142` 的命令表、
+**文档**：`docs/script-usage.md` 的 `update` 一节（`388-394`）、`README.md:142` 的命令表、 <!-- doc:gone -->
 `README.md:164` 与 `:200`（顺带补上 `tests/`）。`CONTRIBUTING.md` 已经写了「改了自检规则要补
 fixture」，这条对 `tests/` 同样适用，不必再改。
 

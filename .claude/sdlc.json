@@ -1,8 +1,17 @@
 {
   "version": 1,
   "check": {
-    "command": "./singbox-selfcheck.sh && ./tests/run.sh",
-    "stopHook": "on-edit"
+    "stopHook": "on-edit",
+    "commands": [
+      {
+        "name": "main",
+        "command": "./singbox-selfcheck.sh && ./tests/run.sh"
+      },
+      {
+        "name": "doc",
+        "command": "sdlc-doc lint"
+      }
+    ]
   },
   "fix": {
     "testGlobs": [

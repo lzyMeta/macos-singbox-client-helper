@@ -9,7 +9,7 @@
 ./singbox-selfcheck.sh && ./tests/run.sh
 ```
 
-前半段是 `singbox.sh` 的静态自检（13 项），后半段是 `tests/` 下的 12 个测试文件：
+前半段是 `singbox.sh` 的静态自检（13 项），后半段是 `tests/` 下的 <!-- sdlc-doc:n tests/*.test.sh -->12<!-- sdlc-doc:end --> 个测试文件：
 `cli`（参数解析）、`selfcheck`（自检项本身）、`install`（装 `singbox` 命令）、
 `selfupdate`（`update` 阶段 S 的脚本自更新）、`update`（内核升级状态机与 `rollback`）、
 `logs`（日志体积与截断）、`platform`（架构判定）、`verify`（两档退出码）、

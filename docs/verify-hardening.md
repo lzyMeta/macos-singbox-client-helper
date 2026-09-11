@@ -128,7 +128,7 @@ covers:
 
 - `docs/safe-update.md:169-197`：那张软分支表全部作废，改写为两档表 + 退出码约定；
   190-197 的「另开一条」标注改为「已由 `docs/verify-hardening.md` 兑现」
-- `docs/script-usage.md`（`verify` 一节，约 `:287`）：退出码语义、新的失败原因与排查指引
+- `docs/script-usage.md`（`verify` 一节，约 `:287`）：退出码语义、新的失败原因与排查指引 <!-- doc:gone -->
 - `docs/best-practices.md` 5.8 / 5.9（约 `:1315-1370`）：QUIC 与国内直连的判据说明跟上
 - `README.md`：`verify` 的一句话描述
 
@@ -237,7 +237,7 @@ covers:
 | 6 | `singbox.sh` `_sb_verify_rounds` | 改读退出码；`2` 打 warn 后返回 0 |
 | 7 | `singbox.sh` 帮助文本 | `verify` 与 `update` 两处补退出码语义 |
 | 8 | `tests/update.test.sh` | setup 钉死 `SB_FAKE_QUIC=blocked`；新增第 13 条「仅策略档失败不回滚」 |
-| 9 | `docs/safe-update.md` `docs/script-usage.md` `docs/best-practices.md` `README.md` | 同步 |
+| 9 | `docs/safe-update.md` `docs/script-usage.md` `docs/best-practices.md` `README.md` | 同步 | <!-- doc:gone -->
 
 **与 spec 的三处偏离（实现时拍的）**
 

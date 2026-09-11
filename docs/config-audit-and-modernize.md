@@ -210,8 +210,8 @@ fixture 命名沿用现有 `bad-<问题名>` / `good-<写法>` 约定（`tests/f
 |---|---|
 | `README.md:155` | 「22 个子命令」计数 |
 | `README.md:157-163` | 命令分类表 |
-| `docs/script-usage.md:114-127` | 命令速查表 |
-| `docs/script-usage.md` | 新增一节讲 `config audit` 与两路合流的盲区互补 |
+| `docs/script-usage.md:114-127` | 命令速查表 | <!-- doc:gone -->
+| `docs/script-usage.md` | 新增一节讲 `config audit` 与两路合流的盲区互补 | <!-- doc:gone -->
 | `docs/safe-update.md` | 记一笔「阶段 3 之后自动跑发现层」这个新决定（与 `:134` 那条「升级后不自动跑 `cmd_rules`」并列，但是另一件事） |
 | `.claude/sdlc.json` | `docs.context7.libraries.sing-box.version` `1.13.14` → `1.14.0`（取实测安装版本） |
 
