@@ -4278,7 +4278,8 @@ singbox.sh v$VERSION —— sing-box on macOS 全生命周期管理
                       --editor 会被记住，后续 edit 自动使用
                       --once 只用一次不保存；--show-editor 查看；--reset-editor 清除
   config <sub>        show | backup | list | diff [备份] | restore [备份]
-                      audit [--config <path>] [--apply]  配置的废弃与合法性审查
+                      audit [--config <path>] [--apply] [--deep]
+                      配置的废弃与合法性审查（--deep 起沙箱收内核告警，要网络）
 
 运行
   status              服务状态、TUN 路由、监听端口

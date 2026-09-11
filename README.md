@@ -13,7 +13,7 @@
 - [1. 这是什么](#1-这是什么)
 - [2. 下载与安装](#2-下载与安装)
 - [3. 管理脚本 singbox.sh](#3-管理脚本-singboxsh)
-- [4. 方案文档](#4-方案文档)
+- [4. 文档](#4-文档)
 - [5. 仓库结构](#5-仓库结构)
 - [6. 许可](#6-许可)
 
@@ -167,17 +167,7 @@ $EDITOR config.json
 几个值得单独知道的：
 
 - **`verify`** 六步验证，**没有任何一步会被静默跳过**——退出码 `0` 全过、`1` 链路档失败（换内核可能修好）、`2` 仅策略档失败（DNS/QUIC/国内直连，回滚换不回来，`update` 不会因此回滚）。**第 2 步最关键**：两个出口 IP 必须不同——日志只能证明"流量派给了 `vpsre` 出站"，证明不了它的出口真是住宅 IP（那段中转在服务端，客户端看不见）。这是客户端侧唯一能发现中转断掉的手段。
-- **`config audit`** 审查配置里的废弃字段与不合法之处，用的是**当前装着的那个内核自己**。
-  两路合流：`sing-box check` 说的话（废弃但仍接受的 WARN、已移除的 FATAL）＋ `sing-box schema`
-  里不存在的键。非要两路，是因为它们各有盲区——实测 1.14.0 的 `check` 对
-  `route.rule_set[].download_detour` **一个字都不打**（退 0、无输出），而内核每次 `run`
-  都在往 err 日志里写 deprecated 告警。退出码 `0` 干净、`2` 有废弃项但现在还能跑、
-  `1` 内核已经不接受。加上内置的**迁移表**（第三路，能表达「键合法但用法废弃」，如没开
-  `match_response` 的 `ip_cidr`），`--deep` 再起一次沙箱收割内核 `run` 时的 WARN（第四路，
-  要网络）。`--apply` 有三条改写规则（`download_detour` → 内联 `http_client`、删
-  `independent_cache`、`store_rdrc` → `store_dns`），必须先过四道验收（白名单结构 diff →
-  `check` → 沙箱起得来 → 重跑发现层归零）。
-
+- **`config audit`** 审查配置里的废弃字段与不合法之处，用的是当前装着的那个内核。退出码 `0` 干净、`2` 有废弃项但现在还能跑、`1` 内核已经不接受。`--apply` 能自动改掉三类常见废弃写法（改前备份，改后四道验收，不过就不落地）；`--deep` 起一次沙箱收内核运行时的告警（要网络）。升级内核前跑一次。
 - **`syscheck`** 最容易忘、也最该记住。IPv6 与 DNS 设置**按网络服务生效、不会继承**——插网卡、连手机热点、公司 VPN 退出没还原 DNS，都会留下缺口，而代理看起来一切正常。
 - **`doctor`** 出问题先跑它，自动判读十类常见故障并输出诊断文件（写在 0700 的临时目录里 —— 里面有你访问过的域名与日志，贴出来之前先看一眼）。
 - **`edit`** 改配置走"校验 → 备份 → 重启"，两关都过才写入，不过则保留你的修改到临时文件。
@@ -195,34 +185,37 @@ $EDITOR config.json
 - **`rollback` 是随时能按的按钮**：升级成功后旧内核保留在 `sing-box.prev`，当时一切正常、半小时后才发现某个网站进不去，一条命令换回去。只保留一份，只能退一步。
 - **只读命令不要 sudo**：`verify`、`syscheck`、`rules` 全程无需管理员权限。
 
-改动脚本后跑 `./singbox-selfcheck.sh && ./tests/run.sh`。前半段是静态自检（13 项），覆盖几类 macOS 特有的坑（bash 3.2 的变量解析与 `shift 2` 的参数消耗、BSD `mktemp` 的模板限制、`set -u` 下的空数组展开等）；后半段是 `tests/`，用 PATH 前置的桩把参数解析、`install` 装 `singbox` 命令、`update` 的脚本自更新与内核四阶段、`rollback` 的状态机、日志管理、平台与架构判定、`verify` 的两档退出码整个跑一遍——离线、不要 sudo、不碰真实系统。
+改动脚本后跑 `./singbox-selfcheck.sh && ./tests/run.sh`。前半段是静态自检（13 项），覆盖几类 macOS 特有的坑（bash 3.2 的变量解析与 `shift 2` 的参数消耗、BSD `mktemp` 的模板限制、`set -u` 下的空数组展开等）；后半段是 `tests/` 下的测试文件（清单见第 5 节），用 PATH 前置的桩把脚本整个跑一遍——离线、不要 sudo、不碰真实系统。
 
 自检的每一项在 `tests/fixtures/` 里都有「会被抓到」和「不该被抓到」两种样本钉住。这不是形式主义：曾经有 2 项用了 GNU 专有的 `grep -P`，在 BSD grep 上恒报错、永远不绿；也曾有 1 项的正则只匹配恰好 2 空格缩进，于是恒绿、永远不报。两种坏法都不会自己暴露。
 
 ---
 
-## 4. 方案文档
+## 4. 文档
 
-**[docs/best-practices.md](docs/best-practices.md)** 讲的是"为什么这么配"，不只是"怎么配"：
-
-| 章节 | 内容 |
+| 文档 | 读它干什么 |
 |---|---|
-| 0 | 架构与关键决策 |
-| 1 | 完整配置 JSON |
-| 2 | **配置逐字段详解**——每个字段是什么、为什么这么写、版本兼容对照 |
-| 3–4 | 安装内核、macOS 系统层准备 |
-| 5 | 验证清单，每步都有"不通过时"分支 |
-| 6 | 运行与开机自启 |
-| 7 | 故障排查 |
-| 8 | 安全与维护 |
+| **[docs/script-usage.md](docs/script-usage.md)** | 操作手册：每个命令怎么用、输出怎么读、出了错怎么办 |
+| **[docs/best-practices.md](docs/best-practices.md)** | 方案文档：为什么这么配。配置逐字段详解、系统层准备、验证清单、故障排查 |
+| [docs/maintaining.md](docs/maintaining.md) | 维护者手册：验收、文档怎么不漂移、迁移表怎么更新 |
 
-几个文档里展开讲的、容易踩的点：
+`best-practices.md` 里几个容易踩的点：
 
 - **DNS 层为什么拦 AAAA 用 `NOERROR` 而拦广告用 `NXDOMAIN`**——用反了会把正常网站也弄挂
 - **规则集内部不是顺序匹配**，外层规则表才是；由此带来"无法在规则集内部做排除"的限制
 - **IP 规则匹配不到域名连接**，以及本方案刻意不插 `resolve` 的取舍
 - **规则集下载失败不会阻止启动**，只静默让规则永不命中——最隐蔽的一类故障
 - **系统 DNS 若是路由器地址，查询根本不进 TUN**，明文出网被投毒
+
+**设计记录**（按时间；写的是当时的问题与决定，不随代码更新，行号与数字以代码为准）：
+
+| 记录 | 内容 |
+|---|---|
+| [docs/safe-update.md](docs/safe-update.md) | `update` 重做为四阶段 + `rollback` |
+| [docs/verify-hardening.md](docs/verify-hardening.md) | `verify` 消除静默跳过，两档退出码 |
+| [docs/self-install-and-self-update.md](docs/self-install-and-self-update.md) | `install` 装 `singbox` 命令，`update` 阶段 S 脚本自更新 |
+| [docs/config-audit-and-modernize.md](docs/config-audit-and-modernize.md) | `config audit` 第一轮：两路发现层 + `--apply` |
+| [docs/config-audit-migration-table.md](docs/config-audit-migration-table.md) | `config audit` 第二轮：四路发现层、迁移表、三条改写规则 |
 
 ---
 
@@ -238,20 +231,33 @@ $EDITOR config.json
 │   └── release.yml            推 v* tag 时校验 tag == VERSION，建 release 并传 singbox.sh
 ├── tests/
 │   ├── run.sh                 跑 tests/ 下所有 *.test.sh
+│   ├── cli.test.sh            参数解析
 │   ├── selfcheck.test.sh      验证自检项真的在检查
 │   ├── install.test.sh        install 把脚本装成 $PREFIX/bin/singbox
 │   ├── selfupdate.test.sh     update 阶段 S（脚本自更新）的状态机
 │   ├── update.test.sh         update / rollback 的状态机断言
 │   ├── logs.test.sh           日志体积可见性与原地截断
 │   ├── platform.test.sh       平台与 CPU 架构判定（Rosetta）
-│   ├── cli.test.sh            参数解析
 │   ├── verify.test.sh         verify 的两档退出码
+│   ├── config-audit.test.sh   config audit 的发现层、迁移表与 --apply
+│   ├── doctor.test.sh         doctor / status 对 TUN 路由的判读
+│   ├── template.test.sh       config.example.json 过 audit、且与 live 逐键一致
+│   ├── docs.test.sh           手册对着源头核对（子命令、文件清单、目录、配置全文…）
 │   └── fixtures/              样本脚本与 PATH 桩（假 sudo / curl / launchctl 等）
 ├── config/
 │   └── config.example.json    配置模板（占位符）
 └── docs/
-    ├── script-usage.md        脚本使用说明
-    └── best-practices.md      方案文档与字段详解
+    ├── script-usage.md        操作手册
+    ├── best-practices.md      方案文档与字段详解
+    ├── maintaining.md         维护者手册
+    ├── safe-update.md         设计记录：update 四阶段 + rollback
+    ├── verify-hardening.md    设计记录：verify 收紧
+    ├── self-install-and-self-update.md
+    │                          设计记录：singbox 命令自动安装与脚本自更新
+    ├── config-audit-and-modernize.md
+    │                          设计记录：config audit 第一轮
+    └── config-audit-migration-table.md
+                               设计记录：config audit 第二轮（迁移表）
 ```
 
 `.gitignore` 已排除 `config.json`、`*.bak`、`ui/`、`cache.db` 等本地产物——**填好参数的配置不要提交**。

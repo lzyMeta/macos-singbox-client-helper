@@ -27,9 +27,11 @@ sing-box 在 macOS 上的全生命周期管理工具：安装、配置、验证�
 - [7. 配置管理](#7-配置管理)
   - [`edit` — 安全地改配置](#edit-安全地改配置)
   - [`config` — 备份与回滚](#config-备份与回滚)
+  - [`config audit` — 废弃字段与合法性审查](#config-audit-废弃字段与合法性审查)
 - [8. 维护](#8-维护)
   - [`update` — 升级脚本与内核](#update-升级脚本与内核)
-  - [`rollback` — 换回上一个内核与上一版命令](#rollback-换回上一个内核)
+  - [`rollback` — 换回上一个内核](#rollback-换回上一个内核)
+  - [`mirror` — GitHub 下载镜像](#mirror-github-下载镜像)
   - [`uninstall`](#uninstall)
 - [9. 边界情况的处理](#9-边界情况的处理)
 - [10. 常见问题](#10-常见问题)
@@ -126,9 +128,9 @@ singbox <命令> [参数]
 | | `doctor` | 收集诊断并自动判读 |
 | 配置 | `edit [--editor <cmd>]` | 改配置（校验 + 备份 + 重启），编辑器可记忆 |
 | | `config show\|backup\|list\|diff\|restore` | 配置与备份管理 |
-| | `config audit [--config <path>] [--apply] [--deep]` | 废弃字段与合法性审查（四路发现层），`--apply` 三条改写规则，`--deep` 加沙箱日志档 |
-| 维护 | `update` | 升级内核：预检 → 沙箱验证 → 升级 → 验收，任一阶段失败自动回滚 |
-| | `rollback` | 换回上一个内核（`.prev`）并重新验收 |
+| | `config audit [--config <path>] [--apply] [--deep]` | 废弃字段与合法性审查；`--apply` 自动改三类废弃写法；`--deep` 起沙箱收内核告警 |
+| 维护 | `update` | 升级脚本与内核：脚本自更新 → 预检 → 沙箱验证 → 升级 → 验收，任一阶段失败自动回滚 |
+| | `rollback` | 换回上一个内核与上一版命令（`.prev`）并重新验收 |
 | | `dns` | 系统 DNS 的查看与切换 |
 | | `mirror` | GitHub 下载镜像的探测与固定 |
 | | `uninstall` | 卸载 |
@@ -479,124 +481,32 @@ singbox config audit --apply                  # 三条改写规则 + 四道验�
 | 2 | 有废弃项但内核仍接受 —— 配置现在能跑，**将来**会坏 |
 | 1 | 内核会拒 —— 配置已经起不来，或升级后必起不来 |
 
-#### 四路发现层
+**报告怎么读**：只看「结论」与「怎么办」两列就够——「将来会坏」的按编号到详情里找链接与建议写法；
+「提示」是行为变更提醒，配置照旧合法，不进退出码。「谁发现的」一列只是来源标注（`check` / `schema` /
+`表` / `run`），不需要理解。
 
-| 路 | 抓什么 | 代价 | 来源栏 |
-|---|---|---|---|
-| A `check` | 内核在 `New()` 阶段上报的 WARN / FATAL（自带官方链接） | 毫秒、离线 | `check` |
-| B `schema` | 源码里 `schema:"omit"` 的全部字段 —— 即「未知键」 | 毫秒、离线 | `schema` |
-| C 迁移表 | 内置于 `singbox.sh` 的一张表（`_cfg_pylib` 里的 `TABLE`），每条是一个 JSON 路径谓词。能表达 A/B 表达不了的**用法条件**：「远程规则集既无 `http_client` 也无 `download_detour`，且 `http_clients` / `route.default_http_client` 都空」、「DNS 规则有 `ip_cidr` / `ip_is_private` / `ip_accept_any` 却没开 `match_response`」 | 毫秒、离线；**要人维护** | `table` |
-| D 沙箱日志 | 内核 `Start()` 阶段上报的 WARN（`grep 'deprecated in sing-box'`），版本无关，表里没收录的新条目也抓得到 | 分钟级、**要网络**（冷 cache 要下全部远程规则集） | `run` |
+**`--apply` 会做什么**：只改三类写法，别的一律只报不改——
 
-裸跑 = A + B + C。`--deep` 加 D。D **不额外起沙箱**：`--apply` 第 3 道与 `update` 阶段 1 已经在跑沙箱，
-顺手收割它们的 `run.log`；`--deep` 只是让裸审查也起一次。无网络时 D 降级并在输出里明说，退出码按 A/B/C 定。
-远程规则集下不到时内核死在 `initialize rule-set`，DNS 那几条 WARN 走不到——所以 D 依赖网络，
-且沙箱没建链时报告会注明「日志可能不完整」。
-
-同一条发现常被多路抓到（`store_rdrc` 四路全中），**按 JSON 路径去重**，来源栏列出所有命中的路
-（`check+schema+table+run`）——报告本身就是覆盖矩阵的真机证据。说明与链接**以表为准**：A/D 从内核
-WARN 抠出的链接可能是死链（1.14.0 的 `strategy` 那条就是），B 只会说「schema 不认识」。
-
-为什么 A 与 B 都不够，实测 sing-box 1.14.0 的 8 条弃用项：
-
-| 1.14.0 弃用项 | `check` | `schema` | `run` |
-|---|---|---|---|
-| `download_detour` | 沉默 | ✓ | WARN |
-| 隐式默认 HTTP client | 沉默 | **看不见**（不是键，是「没写键」） | WARN |
-| `tls.acme` | WARN | ✓ | WARN |
-| DNS 规则动作 `strategy` | 沉默 | ✓ | WARN |
-| `rule_set_ip_cidr_accept_empty` | WARN | ✓ | WARN |
-| `independent_cache` | WARN | ✓ | WARN |
-| `store_rdrc` | WARN | ✓ | WARN |
-| 不带 `match_response` 的 `ip_cidr` / `ip_is_private` | 沉默 | **看不见**（键合法，用法废弃） | WARN |
-| Hysteria v1 调优字段（changelog 才有） | 沉默 | ✓ | **沉默** |
-
-> ⚠️ B 路的结构比对要认真 schema 的形状。真 schema 里 `DNSRule` / `Rule` 是
-> `oneOf[{unevaluatedProperties:false, allOf:[{匹配字段}, {oneOf: 动作分支}]}]`，walker 要把
-> `allOf` 摊平、把 `unevaluatedProperties` 当 `additionalProperties`，并且在配置没写 `action` 时落到
-> 唯一不 `required` 它的分支（默认动作 `route`）——`reject` 分支的 `method` 枚举含 `""`，
-> 「缺键算隐式命中」会把普通规则误归到 `reject`，`outbound` 随即被报未知键。`tests/fixtures/schema-min.json`
-> 照真 schema 的形状写，就是为了守住这两条。
-
-内核低于 1.14.0 时只用 A 路（B 的前提没验过，C 的谓词全按 1.14.0 源码写）；`--apply` 在低于 1.14.0 时直接拒绝。
-
-#### `notice` 档与 `covers`
-
-- `notice` 只有 C 路能给，是**行为变更**不是废弃：1.14.0 起 `dns.rules[].query_type` / `ip_version` 也作用于
-  内部解析；引用规则集却没开 `match_response` 的 DNS 规则（离线不知道规则集里有没有 `ip_cidr` 条目，
-  `--deep` 能定性：内核打了地址过滤的 WARN 就升为 `deprecated`；沙箱建链成功而没打，说明规则集不含
-  `ip_cidr`，这条 notice 撤掉。沙箱没建链时不撤——规则集下不到，DNS 那几条 WARN 根本走不到）。
-- 表头 `CFG_TABLE_COVERS=1.14.0`。内核 **minor** 高于它时打一行「迁移表只覆盖到 1.14.0，内核 X 新增的废弃项
-  请用 `--deep` 或查 deprecated 页」，退出码不受影响；1.14.9 不打，1.15.0 打。
-- 表里 `removed_in ≤ 内核版本` 但 A 沉默的条目（deprecated 页说 `block` 出站 1.13.0 已移除，实测 1.14.0 仍放行），
-  报 `deprecated` 并附「文档称已在 X 移除，本内核仍接受」。**表自己永远不产生 `removed`**——内核会不会拒，
-  只有内核说了算。
-- `snippet` 型条目（`strategy`、遗留地址过滤）不落地，报告里打「建议写法（按 v1.14.0 源码语义推导，未经行为验证，
-  需人工核对）」。片段的语义依据是源码不是文档：地址过滤在 `dns/router.go:296` 是**整条规则跳过**非地址查询，
-  所以等价形式是两条都限定 `query_type` 的 `evaluate` + `match_response`，且 `evaluate` 用**原规则的 server**
-  （官方示例换成 remote 再 route 到 local，那换了决定服务器，不是等价改写）；`strategy: ipv4_only` = AAAA 直接回空
-  NOERROR，等价于在原规则前插一条 `query_type: ["AAAA"]` 的 `predefined`；`prefer_*` 对客户端查询没作用，删掉即可。
-
-#### `--apply` 的三条规则与四道验收
-
-改写规则来自表里 `fix: auto` 的条目，`_cfg_migrate`（改写）与 `_cfg_whitelist_diff`（第 1 道）**共用这张表**。
-边界：官方 `migration.md` 有完整前后 JSON 对照，且语义无分支——三条都满足：
-
-| 规则 | 改写 |
+| 旧写法 | 改成 |
 |---|---|
-| `route.rule_set[type=remote].download_detour: "X"` | → `http_client: {"detour": "X"}`（内联，不引 `http_clients[]`、不设 `default_http_client`） |
-| `dns.independent_cache` | 删键（migration 原话「Simply remove the field」） |
-| `experimental.cache_file.store_rdrc` | 值为 `true` 且无 `store_dns` → 改名 `store_dns: true`；否则删键 |
+| 规则集的 `download_detour: "X"` | `http_client: {"detour": "X"}` |
+| `dns.independent_cache` | 删掉 |
+| `experimental.cache_file.store_rdrc: true` | `store_dns: true`（已有 `store_dns` 或值为 false 则只删） |
 
-确认提示前**逐条列出将改哪些键、各几处**；三条命中都是 0 时报「无需改写」直接退出，不重启。
+流程：列出将改哪些键各几处 → 确认 → 备份 → 改写 → 四道验收（结构 diff 只落在这三处、`sing-box check`、
+沙箱起得来、重跑审查归零）→ 落地并重启。任一道不过就不落地，原配置一字未动。三处命中都是 0 时报
+「无需改写」直接退出。改坏了用 `config restore` 回到备份。`--apply` 只作用于 live 配置，不能与 `--config` 同用。
 
-四道验收，缺一不可 —— 每一道挡的是**不同**的错：
+**`--deep`**：起一次沙箱跑新配置，把内核运行时打的废弃告警也收进来（迁移表没收录的新条目也抓得到）。
+要网络——远程规则集下不到时沙箱起不来，报告会注明「日志可能不完整」。无网络时自动降级为普通审查。
 
-| 改写可能出的错 | 哪道挡住 |
-|---|---|
-| ① 漏改 | **④ 重跑发现层归零**：三条规则在新配置上的命中数之和必须是 0。前三道全漏：漏改不产生 diff，`check` 沉默，沙箱照样起得来 |
-| ② 值搬错（`http_client:{}` 丢了 `detour`、`store_rdrc: true` 写成 `store_dns: false`） | **① 白名单 diff**：「该有哪些 diff」从原配置 + 规则表独立推出，新增的值必须等于映射后的旧值、类型也要一致 |
-| ③ 顺手弄坏别的 | **① 白名单 diff** |
-| ④ tag 引用写错 | **③ 沙箱起得来**（`check` 实测放过）；内联写法已从源头免疫 |
-| ⑤ 跨段污染 | **① 白名单 diff** |
-| ⑥ 全局默认副作用（`route.default_http_client`） | 四道全挡不住 → **靠范围排除**：只报不改 |
+**还会在哪些地方看到它**：`install` 装完、`edit` 保存后会报一次（不阻止）；`update` 升完内核后报一次
+（不影响 update 的退出码与回滚）；`verify` 第 6 步把它挂在策略档（退 2）；`doctor` 也看一眼。
 
-第 1 道是**结构** diff 不是文本 diff。第 3 道依赖网络，不通时**降级为 3/4 道并明说**；它的 `run.log` 顺手喂给
-第 4 道当 D 路输入。回退点走现成机制（`backup_config` + `prune_backups 10`，`config restore` / `config diff`），
-因此 `--apply` **只作用于 `$CFG`**，不能与 `--config` 同用。
+内核低于 1.14.0 时只用内核自己的 `check` 一路；`--apply` 直接拒绝。内核比迁移表覆盖的版本新时会提示
+一句「表可能漏项，用 `--deep` 或查 deprecated 页」。表怎么更新见 [docs/maintaining.md](maintaining.md)。
 
-#### 迁移表怎么维护
-
-**网站是活的，内核是死的。** 首页 changelog 已经是下一个 alpha，而审查对象是本机装着的那个版本。
-表的每条都钉在 sing-box 的 **git tag**，网站只做人工核对。内核出新 minor 时：
-
-1. 按 tag 读四处源：`docs/deprecated.md` / `docs/migration.md` / `docs/changelog.md`（三页的源）、
-   `experimental/deprecated/constants.go`（内核真正会告警的 Note）、`option/*.go` 里 `schema:"omit"` 的字段
-   （B 路的精确定义）、`deprecated.Report` 的调用点（标每条是 `New()` 阶段 A 能抓，还是 `Start()` 阶段只有 D 能抓）。
-   ```bash
-   curl -fsSL https://raw.githubusercontent.com/SagerNet/sing-box/v1.15.0/docs/migration.md
-   ```
-2. 往 `_cfg_pylib` 的 `TABLE` 加条目：`id` / `match`（`key` 路径模式或 `usage` 具名谓词）/ `deprecated_in` /
-   `removed_in` / `tier` / `stage` / `warn`（把 WARN 原文对回本条的正则）/ `link` / `note` / `fix` / `rewrite`。
-   **链接写整段字面量，不拼接**——`tests/config-audit.test.sh` 的锚点核对是 grep 源码做的。
-3. 从新 tag 的 `docs/migration.md` 重新生成 `tests/fixtures/migration-anchors.txt`（生成规则写在文件头注），
-   把 `CFG_TABLE_COVERS` 改成新 minor。
-4. 概括性文字复现不出正确的改写：`snippet` 型条目的语义只从源码取（本轮的例子：文档说地址过滤「只对地址查询生效」，
-   源码是整条规则跳过——按文档写出的等价形式会多一条永远不该有的兜底）。
-5. 文档与内核互有遗漏，两个方向都有：内核 WARN 给的链接可能是死链（1.14.0 的 `strategy`）；deprecated 页会漏
-   （Hysteria v1 调优字段、`tun.endpoint_independent_nat`）；也会说已移除而内核仍接受（`block` 出站）。
-   每条的 `note` 里把这类出入写清楚。
-
-#### 挂在哪些流程上
-
-| 挂载点 | 行为 |
-|---|---|
-| `install` 阶段 5、`edit` 校验后 | 报出废弃项，不阻止安装/保存 |
-| `update` 阶段 3 之后 | 只报不改，**不影响 update 的退出码与回滚判定**。阶段 1 沙箱（新内核）的 `run.log` 喂给 D 路；旧 < 1.14.0 ≤ 新时另打一次规则集合并匹配语义纠正的提示（changelog 1.14.0 注 14） |
-| `verify` 第 6 步 | 挂**策略档**（退 2）。`notice` 不计入 |
-| `doctor` 自动判读 | 在运行日志 `grep deprecated` 之外再加一次配置视角 |
-
-环境变量 `SB_LOCKDIR`：锁目录，默认 `/tmp/.singbox-sh.lock`，测试用它把锁指到临时目录。
+---
 
 ## 8. 维护
 

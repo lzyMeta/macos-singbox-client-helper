@@ -9,14 +9,15 @@
 ./singbox-selfcheck.sh && ./tests/run.sh
 ```
 
-前半段是 `singbox.sh` 的静态自检（13 项），后半段是 `tests/` 下的十一个测试文件：
+前半段是 `singbox.sh` 的静态自检（13 项），后半段是 `tests/` 下的 12 个测试文件：
 `cli`（参数解析）、`selfcheck`（自检项本身）、`install`（装 `singbox` 命令）、
 `selfupdate`（`update` 阶段 S 的脚本自更新）、`update`（内核升级状态机与 `rollback`）、
 `logs`（日志体积与截断）、`platform`（架构判定）、`verify`（两档退出码）、
 `config-audit`（四路发现层、迁移表、`--apply` 三条规则与四道验收）、
 `doctor`（TUN 路由判读：`_tun_route_state` 三处共用）、
 `template`（`config/config.example.json` 过 audit、且与 live 逐键全等——live 读得到才比，只打印路径不打印值；
-网卡名、tun 地址、`external_ui` 三条路径允许值不同，模板留通用值）。
+网卡名、tun 地址、`external_ui` 三条路径允许值不同，模板留通用值）、
+`docs`（手册对着源头核对：子命令与旗标、README 仓库结构与文档索引、计数、best-practices 配置全文、目录、行号引用）。
 
 **TUN 路由的判据是两半都要**：上半 `128.0/1`，下半 `0/1` 或 sing-tun v0.9 起的七段
 `1/8 2/7 4/6 8/5 16/4 32/3 64/2`（避开 `0.0.0.0/8`）。只认 `0/1` 会把真机形状误报成「未接管」，

@@ -107,6 +107,7 @@ App → utun 虚拟网卡 → sniff（还原域名）→ DNS 劫持 → 路由�
 
 ```json
 {
+  "$schema": "https://sing-box.sagernet.org/schema.json",
   "log": {
     "level": "info",
     "timestamp": true
@@ -116,14 +117,14 @@ App → utun 虚拟网卡 → sniff（还原域名）→ DNS 劫持 → 路由�
       {
         "type": "https",
         "tag": "dns-remote",
-        "server": "1.1.1.1",
-        "detour": "vpstrans"
+        "detour": "vpstrans",
+        "server": "1.1.1.1"
       },
       {
         "type": "https",
         "tag": "dns-direct",
-        "server": "223.5.5.5",
-        "detour": "direct"
+        "detour": "direct",
+        "server": "223.5.5.5"
       }
     ],
     "rules": [
@@ -136,9 +137,7 @@ App → utun 虚拟网卡 → sniff（还原域名）→ DNS 劫持 → 路由�
         "rcode": "NOERROR"
       },
       {
-        "rule_set": [
-          "geosite-category-ads-all"
-        ],
+        "rule_set": "geosite-category-ads-all",
         "action": "predefined",
         "rcode": "NXDOMAIN"
       },
@@ -152,20 +151,16 @@ App → utun 虚拟网卡 → sniff（还原域名）→ DNS 劫持 → 路由�
       }
     ],
     "final": "dns-remote",
-    "strategy": "ipv4_only",
-    "disable_expire": false
+    "strategy": "ipv4_only"
   },
   "inbounds": [
     {
       "type": "tun",
       "tag": "tun-in",
       "interface_name": "utun233",
-      "address": [
-        "172.19.0.1/30"
-      ],
       "mtu": 9000,
+      "address": "172.19.0.1/30",
       "auto_route": true,
-      "strict_route": false,
       "stack": "gvisor"
     },
     {
@@ -179,15 +174,14 @@ App → utun 虚拟网卡 → sniff（还原域名）→ DNS 劫持 → 路由�
     {
       "type": "vless",
       "tag": "vpstrans",
+      "domain_resolver": {
+        "server": "dns-direct",
+        "strategy": "ipv4_only"
+      },
       "server": "YOUR_VPSTRANS_ADDR",
       "server_port": 443,
       "uuid": "YOUR_UUID_VPSTRANS",
       "flow": "xtls-rprx-vision",
-      "packet_encoding": "xudp",
-      "domain_resolver": {
-        "server": "dns-direct",
-        "strategy": "ipv4_only"
-      },
       "tls": {
         "enabled": true,
         "server_name": "YOUR_SNI",
@@ -200,20 +194,20 @@ App → utun 虚拟网卡 → sniff（还原域名）→ DNS 劫持 → 路由�
           "public_key": "YOUR_PUBLIC_KEY",
           "short_id": "YOUR_SHORT_ID"
         }
-      }
+      },
+      "packet_encoding": "xudp"
     },
     {
       "type": "vless",
       "tag": "vpsre",
-      "server": "YOUR_VPSTRANS_ADDR",
-      "server_port": 443,
-      "uuid": "YOUR_UUID_VPSRE",
-      "flow": "xtls-rprx-vision",
-      "packet_encoding": "xudp",
       "domain_resolver": {
         "server": "dns-direct",
         "strategy": "ipv4_only"
       },
+      "server": "YOUR_VPSTRANS_ADDR",
+      "server_port": 443,
+      "uuid": "YOUR_UUID_VPSRE",
+      "flow": "xtls-rprx-vision",
       "tls": {
         "enabled": true,
         "server_name": "YOUR_SNI",
@@ -226,7 +220,8 @@ App → utun 虚拟网卡 → sniff（还原域名）→ DNS 劫持 → 路由�
           "public_key": "YOUR_PUBLIC_KEY",
           "short_id": "YOUR_SHORT_ID"
         }
-      }
+      },
+      "packet_encoding": "xudp"
     },
     {
       "type": "direct",
@@ -238,12 +233,6 @@ App → utun 虚拟网卡 → sniff（还原域名）→ DNS 劫持 → 路由�
     }
   ],
   "route": {
-    "auto_detect_interface": true,
-    "default_domain_resolver": {
-      "server": "dns-direct",
-      "strategy": "ipv4_only"
-    },
-    "final": "vpstrans",
     "rules": [
       {
         "action": "sniff"
@@ -268,9 +257,7 @@ App → utun 虚拟网卡 → sniff（还原域名）→ DNS 劫持 → 路由�
         "outbound": "direct"
       },
       {
-        "rule_set": [
-          "geosite-private"
-        ],
+        "rule_set": "geosite-private",
         "outbound": "direct"
       },
       {
@@ -279,9 +266,7 @@ App → utun 虚拟网卡 → sniff（还原域名）→ DNS 劫持 → 路由�
         "action": "reject"
       },
       {
-        "rule_set": [
-          "geosite-category-ads-all"
-        ],
+        "rule_set": "geosite-category-ads-all",
         "action": "reject"
       },
       {
@@ -302,11 +287,11 @@ App → utun 虚拟网卡 → sniff（还原域名）→ DNS 劫持 → 路由�
       },
       {
         "domain_suffix": [
+          "ipinfo.io",
           "ttcdn-us.com",
           "ttlivecdn.com",
           "ttoverseaus.net",
-          "ttwstatic.com",
-          "ipinfo.io"
+          "ttwstatic.com"
         ],
         "outbound": "vpsre"
       },
@@ -322,9 +307,7 @@ App → utun 虚拟网卡 → sniff（还原域名）→ DNS 劫持 → 路由�
         "outbound": "vpsre"
       },
       {
-        "rule_set": [
-          "geoip-telegram"
-        ],
+        "rule_set": "geoip-telegram",
         "outbound": "vpsre"
       },
       {
@@ -353,178 +336,211 @@ App → utun 虚拟网卡 → sniff（还原域名）→ DNS 劫持 → 路由�
       {
         "type": "remote",
         "tag": "geosite-private",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/private.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-category-ads-all",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/category-ads-all.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-anthropic",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/anthropic.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-openai",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/openai.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-category-ai-!cn",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/category-ai-!cn.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-github",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/github.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-google",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/google.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-bing",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/bing.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-tiktok",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/tiktok.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-telegram",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/telegram.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-meta",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/meta.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-x",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/x.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-discord",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/discord.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-whatsapp",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/whatsapp.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geoip-telegram",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geoip/telegram.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-apple-cn",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/apple@cn.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-microsoft-cn",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/microsoft@cn.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-gfw",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/gfw.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-geolocation-!cn",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/geolocation-!cn.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geosite-cn",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geosite/cn.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       },
       {
         "type": "remote",
         "tag": "geoip-cn",
-        "format": "binary",
         "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/sing/geo/geoip/cn.srs",
-        "download_detour": "vpstrans",
-        "update_interval": "7d"
+        "update_interval": "168h0m0s",
+        "http_client": {
+          "detour": "vpstrans"
+        }
       }
-    ]
+    ],
+    "final": "vpstrans",
+    "auto_detect_interface": true,
+    "default_domain_resolver": {
+      "server": "dns-direct",
+      "strategy": "ipv4_only"
+    }
   },
   "experimental": {
     "cache_file": {
       "enabled": true,
-      "path": "/usr/local/etc/sing-box/cache.db",
-      "store_fakeip": false
+      "path": "/usr/local/etc/sing-box/cache.db"
+    },
+    "clash_api": {
+      "external_controller": "127.0.0.1:9090",
+      "external_ui": "ui",
+      "external_ui_download_url": "https://github.com/MetaCubeX/metacubexd/archive/refs/heads/gh-pages.zip",
+      "external_ui_download_detour": "vpstrans",
+      "secret": "YOUR_CLASH_SECRET"
     }
   }
 }
@@ -613,7 +629,7 @@ App → utun 虚拟网卡 → sniff（还原域名）→ DNS 劫持 → 路由�
 |---|---|---|
 | `final` | `dns-remote` | 都没命中时用哪个解析器。设成境外解析是**防泄漏兜底**：未知域名宁可绕一圈也不交给本地 DNS |
 | `strategy` | `ipv4_only` | 默认解析策略。与第 1 条规则重复设防 |
-| `disable_expire` | `false` | 遵守 TTL。设 `true` 会让记录永不过期，CDN 调度变更后会连到失效 IP |
+| `disable_expire` | 不写（默认 `false`） | 遵守 TTL。设 `true` 会让记录永不过期，CDN 调度变更后会连到失效 IP |
 
 没写但值得知道的：`disable_cache`（排查时有用）、`cache_capacity`、`reverse_mapping`（**官方明确说在 macOS 这类系统代理并缓存 DNS 的环境下容易出问题**，别开）、`client_subnet`。
 
@@ -629,7 +645,7 @@ App → utun 虚拟网卡 → sniff（还原域名）→ DNS 劫持 → 路由�
 | `address` | `172.19.0.1/30` | **只给 IPv4 = 不启用 IPv6**。1.10 起 `inet4_address`/`inet6_address` 合并成了这个字段 |
 | `mtu` | `9000` | |
 | `auto_route` | `true` | 把默认路由指向 TUN。官方提醒：为避免流量回环，必须同时设置 `route.auto_detect_interface` 或 `default_interface` 或 `bind_interface`——本配置用前者 |
-| `strict_route` | `false` | 官方说明它可让不支持的网络不可达并防 Windows 多网卡 DNS 泄漏，同时可能让某些应用无法工作。**macOS 上开启常导致局域网设备不可达**，故关闭；由此带来的 DNS 问题用 2.2 的方式解决 |
+| `strict_route` | 不写（默认 `false`） | 官方说明它可让不支持的网络不可达并防 Windows 多网卡 DNS 泄漏，同时可能让某些应用无法工作。**macOS 上开启常导致局域网设备不可达**，故关闭；由此带来的 DNS 问题用 2.2 的方式解决 |
 | `stack` | `gvisor` | `system` 用系统栈，`gvisor` 用虚拟栈，`mixed` 是 system TCP + gvisor UDP。**默认值取决于编译标签**，显式写死更可控 |
 
 > **1.14 新增 `dns_mode` 与 `dns_address`。** 默认 `dns_mode: hijack`，且 `dns_address` 未设置时会自动劫持派生地址上的 DNS，效果等同一条 `hijack-dns` 路由动作。所以在 1.14 上配置里那条显式 `hijack-dns` 是冗余的——保留无害，1.13 及以下必须有。
@@ -767,9 +783,9 @@ direct 出站的 `domain_resolver` 含义不同——官方明确区分：**`dir
 | 字段 | 本配置 | 说明 |
 |---|---|---|
 | `type` | `remote` | 另有 `local`（读本地文件）和 `inline`（直接写在配置里） |
-| `format` | `binary` | 对应 `.srs`；`source` 对应未编译的 `.json` |
-| `download_detour` | `vpstrans` | **通过代理下载**，规则集在国内多半下不动 |
-| `update_interval` | `7d` | 自动更新周期 |
+| `format` | 不写 | 1.10 起按 URL 后缀推断：`.srs` 是 `binary`，`.json` 是 `source`。写了就必须和文件真实格式一致 |
+| `http_client.detour` | `vpstrans` | **通过代理下载**，规则集在国内多半下不动。1.14 起替代 `download_detour`（`config audit --apply` 会自动改） |
+| `update_interval` | `168h0m0s` | 自动更新周期（7 天）。`7d` 也接受，`sing-box format` 会把它写成这个样子 |
 
 #### `.srs` 和 `.json` 的区别
 
@@ -782,7 +798,7 @@ direct 出站的 `domain_resolver` 含义不同——官方明确区分：**`dir
 | 加载 | 每次启动解析文本再建索引 | 已编译好，直接映射，启动快、内存低 |
 | 用途 | 自己写、审查内容 | 日常运行、远程下载 |
 
-`format` 必须和文件真实格式对应，写反了会加载失败——这是规则集报错里最常见的一种。
+显式写 `format` 时必须和文件真实格式对应，写反了会加载失败——这是规则集报错里最常见的一种。
 
 转换与排查命令：
 
@@ -882,7 +898,7 @@ done
 |---|---|
 | `enabled` | 持久化 DNS 缓存和规则集，重启不用重新下载 |
 | `path` | **必须用绝对路径**，理由见 3.2 |
-| `store_fakeip` | 本配置不用 FakeIP，保持 `false` |
+| `store_fakeip` | 本配置不用 FakeIP，不写（默认 `false`） |
 
 #### `experimental.clash_api`（可选，排查分流的利器）
 
@@ -893,8 +909,7 @@ done
 "experimental": {
   "cache_file": {
     "enabled": true,
-    "path": "/usr/local/etc/sing-box/cache.db",
-    "store_fakeip": false
+    "path": "/usr/local/etc/sing-box/cache.db"
   },
   "clash_api": {
     "external_controller": "127.0.0.1:9090",
@@ -948,8 +963,10 @@ sudo nettop -p $(pgrep -x sing-box)            # 实时流量
 | TUN 的 `gso` | 1.11 | 已无效，删掉 |
 | `dns.independent_cache` | 1.14 | 删掉 |
 | DNS 规则动作里的 `strategy` | 1.14（1.16 移除） | 用 `domain_resolver` 或 `dns.strategy` |
+| 规则集的 `download_detour` | 1.14（1.16 移除） | `http_client: {"detour": "..."}` |
+| `cache_file.store_rdrc` | 1.14（1.16 移除） | `store_dns` |
 
-**升级前的固定动作**：先读官方的 Migration 与 Deprecated 两页，再 `sing-box check -c config.json`。废弃项通常只告警不报错，很容易在一次静默降级之后才发现分流不对了。
+**升级前的固定动作**：`singbox config audit`（上表这类废弃项它都认得，`independent_cache`、`download_detour`、`store_rdrc` 三条能 `--apply` 自动改）。废弃项通常只告警不报错，很容易在一次静默降级之后才发现分流不对了。
 
 ---
 
@@ -1170,7 +1187,7 @@ sing-box rule-set match google.srs services.googleapis.cn   # 某域名会不会
 sing-box rule-set decompile cn.srs | less                   # 看集合里到底有什么
 ```
 
-`-x socks5h://127.0.0.1:10808` 走自己的代理下——`raw.githubusercontent.com` 在国内多半直连不了。这也正是配置里给每个规则集写 `download_detour: vpstrans` 的原因。
+`-x socks5h://127.0.0.1:10808` 走自己的代理下——`raw.githubusercontent.com` 在国内多半直连不了。这也正是配置里给每个规则集写 `http_client: {"detour": "vpstrans"}` 的原因。
 
 `match` 是排查分流最快的手段：怀疑某域名被误捞时一条命令就能证实，不用改配置重启试。
 
@@ -1572,7 +1589,7 @@ sudo lsof -nP -iTCP:10808 -sTCP:LISTEN
 
 `198.18.0.0/15` 是 FakeIP 段——不存在于真实互联网的假地址。把它送进代理隧道，对端无从解析，连接必然失败。
 
-**本配置没有启用 FakeIP**（`dns.servers` 里没有 `type: "fakeip"`，`store_fakeip` 也是 `false`）。出现它只有两种可能：实际生效的是别的配置，或者有别的客户端在跑。
+**本配置没有启用 FakeIP**（`dns.servers` 里没有 `type: "fakeip"`，`store_fakeip` 也没开）。出现它只有两种可能：实际生效的是别的配置，或者有别的客户端在跑。
 
 ```bash
 ps -ax | grep "sing-box" | grep -o "\-c [^ ]*"     # 看 -c 指向哪个文件

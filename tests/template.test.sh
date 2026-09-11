@@ -86,7 +86,7 @@ done
 if [ -z "$LIVE" ]; then
   echo "  SKIP  未指定 live 配置（SB_TEMPLATE_LIVE 为空），跳过逐键比对"
 elif [ ! -r "$LIVE" ]; then
-  echo "  SKIP  读不到 $LIVE，跳过逐键比对"
+  echo "  SKIP  读不到 ${LIVE}，跳过逐键比对"
 else
   out=$(python3 - "$TPL" "$LIVE" <<'PY'
 import json, sys
