@@ -2714,7 +2714,7 @@ def attach_warn(text, src, tier, url):
         # 离线只能给 notice 的规则集地址过滤：内核既然告警了，就升为 deprecated
         mine = [r for r in rows if r["eid"] == "legacy_address_filter_rs"]
         for r in mine:
-            r["desc"] = BY_ID["legacy_address_filter"]["note"] + "（规则集含 ip_cidr 条目，沙箱日志已定性）"
+            r["desc"] = BY_ID["legacy_address_filter"]["note"] + "（内核已告警：引用规则集的规则里至少一条是遗留地址过滤用法，WARN 全局只打一次，分不出是哪条，全部列出）"
     if mine:
         for r in mine:
             add(r["path"], tier, src, r["desc"], r["url"])
@@ -2765,7 +2765,9 @@ if runlog:
 # 反向定性：沙箱建链成功（Start() 走完、规则集都加载了）而内核没打地址过滤的 WARN，
 # 说明那些规则集不含 ip_cidr 条目——离线只能存疑的 notice 到这里有了答案，撤掉。
 # 日志不完整（没建链）时不撤：规则集下不到，DNS 那几条 WARN 根本走不到。
-if runlog and complete == "1":
+# 配置里另有直接的地址过滤规则时也不撤：那条 WARN 全局只打一次（v1.14.0 dns/router.go:156
+# 是 common.Any(newRules, WithAddressLimit)），有它说明不了 rule_set 那几条是不是遗留用法。
+if runlog and complete == "1" and not any(r["eid"] == "legacy_address_filter" for r in rows):
     rows = [r for r in rows if not (r["eid"] == "legacy_address_filter_rs" and "run" not in r["src"])]
 
 def enc(sn):

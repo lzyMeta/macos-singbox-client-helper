@@ -947,6 +947,29 @@ else
 fi
 unset SB_FAKE_CHECK_FAIL SB_FAKE_UNKNOWN_FIELD
 
+#-- R3. 直接地址过滤规则与 rule_set 规则共存：内核那条 WARN 全局只打一次（dns/router.go:156
+#   common.Any），说明不了 rule_set 那条——既不能升 deprecated，也不能撤 notice ------------
+setup
+cp "$FIX/good-http-client.json" "$ROOT/mix.json"
+python3 - "$ROOT/mix.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["dns"] = {"servers": [{"type": "udp", "tag": "dns-direct", "server": "223.5.5.5"}],
+            "rules": [{"domain_suffix": ["cn"], "ip_is_private": True, "action": "route", "server": "dns-direct"},
+                      {"rule_set": "geoip-cn", "action": "route", "server": "dns-direct"}], "final": "dns-direct"}
+json.dump(d, open(sys.argv[1], "w"), indent=2)
+PY
+printf 'WARN[0000] Legacy Address Filter Fields in DNS rules is deprecated in sing-box 1.14.0 and will be removed in sing-box 1.16.0, checkout documentation for migration: https://sing-box.sagernet.org/migration/#migrate-address-filter-fields-to-response-matching\n' > "$ROOT/af.log"
+export SB_FAKE_UDP=alive SB_FAKE_RUN_LOG="$ROOT/af.log"
+audit --config "$ROOT/mix.json" --deep
+ran "直接过滤 + rule_set 共存"
+if hit 'deprecated/table+run] dns.rules[0]' && hit 'notice/table] dns.rules[1]'; then
+  ok "共存：WARN 贴到直接规则 dns.rules[0]，rule_set 的 dns.rules[1] 维持 notice（既不升也不撤）"
+else
+  ng "共存：dns.rules[1] 的 notice 被撤掉或被误升（全局一次的 WARN 定性不了它）"
+fi
+unset SB_FAKE_RUN_LOG SB_FAKE_UDP
+
 echo
 printf '通过 %d，失败 %d\n' "$pass" "$fail"
 [ "$fail" = 0 ]
