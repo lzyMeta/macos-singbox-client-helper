@@ -18,8 +18,9 @@
 
 - **sdlc-kit 的 `sdlc-doc`**（通用规则 D1–D10）：引用了已删除的路径、订正贴在旁边不折回正文、
   两处逐字重复的段落、手册超过 120 行或混进原理、设计记录没标 `status`、`covers` 点名的文件
-  改了而文档没动（改提交时提醒）。`sdlc-doc lint` 已注册为 `check.commands` 的 `doc` 项，
-  `sdlc-check` 会跑它。
+  改了而文档没动（改提交时提醒）。`sdlc-doc lint` 已注册为 `check.commands` 的 `doc` 项。命令里显式把
+  `~/.claude/sdlc-kit-live/bin` 加进 PATH：Stop 闸门的 shell 没有交互 shell 的 PATH，`sdlc-check`
+  又不把自己的 bin 目录暴露给检查命令（sdlc-kit 侧待修），裸写 `sdlc-doc lint` 在闸门里是 127。
 - **`tests/docs.test.sh`**（本项目特有的事实，通用工具不可能知道）：分发表里的子命令要出现在
   README 命令表、内置 help 和某份手册里；`config audit` 的旗标；README 仓库结构与文档索引；自检项数；
   `best-practices.md` 的配置全文（必须与 `config/config.example.json` 逐字相同）；README 与
