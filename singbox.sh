@@ -2771,13 +2771,14 @@ PY
 # 挂载点专用：只报，不参与调用方的退出码判定，返回值恒为 0。
 # install / update / doctor 各有各的成败判据，配置现代性不该把它们打死 —— 这也是
 # 原先那四处 grep 里唯一正确的部分，收敛时原样保留。
+# $1 配置路径  $2 沙箱日志路径（可空：cmd_update 阶段 1 的沙箱顺手收割，喂给 D 路）
 _cfg_audit_notice() {
-  local cfg="$1"
+  local cfg="$1" runlog="${2:-}"
   [ -f "$cfg" ] || return 0
   local rows; rows=$(mktmp)
   # 审不了就闭嘴退场：这几个挂载点是搭车的，没做成的检查不该在 install / update
   # 的输出里制造噪声，更不该把它们的成败带偏。
-  _cfg_audit "$cfg" >"$rows" 2>/dev/null || return 0
+  _cfg_audit "$cfg" "$runlog" >"$rows" 2>/dev/null || return 0
   # ⚠️ 不写 $(grep -c ... || echo 0)：无命中时 grep 退 1，那个兜底会把计数变成
   # "0\n0"。自检点名过这个形状。
   # notice 档是行为变更提示，不算废弃；挂载点只报 removed / deprecated
@@ -2927,7 +2928,7 @@ _cfg_apply() {
   fi
 
   step "验收 3/4　沙箱起得来"
-  local passed=4
+  local passed=4 runlog=""
   if _sb_udp_alive; then
     local port wd sbcfg
     port=$(_sb_free_port 10900)
@@ -2938,6 +2939,7 @@ _cfg_apply() {
     json_valid "$sbcfg" || die "派生出来的沙箱配置不是合法 JSON"
     _sb_probe_socks "$BIN" "$sbcfg" "$port" "$wd" \
       || die "沙箱验收未过，拒绝落地（${cfg} 一字未动）"
+    runlog="$wd/run.log"        # 顺手收割：第 4 道把它当 D 路输入
   else
     # 沙箱的 cache.db 是空的，remote 规则集要现下一遍——没网这一道跑不了。
     # 这条规则下第 3 道的边际价值本来就最低：它唯一独占的错是 tag 引用写错，
@@ -2952,7 +2954,7 @@ _cfg_apply() {
   local left rows4; rows4=$(mktmp)
   # 审不了就不能落地：这一道是漏改的唯一防线，跳过它等于四道只剩三道，
   # 而漏改恰恰是另外三道全挡不住的那一型。
-  _cfg_audit "$new" >"$rows4" \
+  _cfg_audit "$new" "$runlog" >"$rows4" \
     || die "第 4 道没做成（审不了改写结果），拒绝落地（${cfg} 一字未动）"
   left=$(grep -c 'download_detour' "$rows4" 2>/dev/null || true)
   left=$(printf '%s' "${left:-0}" | tr -d ' ')
@@ -2991,6 +2993,33 @@ _cfg_apply() {
   # 「改完了」和「生效了」是两回事。cmd_config restore 也是这么收尾的。
   cmd_restart
   return 0
+}
+
+# --deep 用：起一次沙箱跑 $1，把 run.log 的路径打到 stdout。跑不成返回 1（stdout 为空）。
+# 沙箱那一套与 --apply 第 3 道同构（_sb_udp_alive → _sb_free_port → _sb_derive_config →
+# _sb_probe_socks），不另起一套：D 路的原则是「凡是已经在跑沙箱的地方顺手收割日志」，
+# --deep 只是让裸审查也起一次。等待沿用 SANDBOX_WAIT：内核在 Start() 阶段就把 WARN 打完，
+# 理论上比建链短，但没有可靠的「打完了」信号。
+_cfg_deep_runlog() {
+  local cfg="$1" port wd sbcfg
+  if ! _sb_udp_alive; then
+    warn "网络不通，沙箱日志档（--deep）跳过：本次只有 check / schema / 迁移表三路" >&2
+    return 1
+  fi
+  port=$(_sb_free_port 10900)
+  [ -n "$port" ] || { warn "10900 起的 200 个端口全被占用，沙箱日志档（--deep）跳过" >&2; return 1; }
+  wd=$(mktmpd)
+  sbcfg="$wd/config.json"
+  _sb_derive_config "$cfg" "$sbcfg" "$port" "$wd" || { warn "派生沙箱配置失败，沙箱日志档（--deep）跳过" >&2; return 1; }
+  json_valid "$sbcfg" || { warn "派生出来的沙箱配置不是合法 JSON，沙箱日志档（--deep）跳过" >&2; return 1; }
+  info "沙箱日志档：起一次沙箱收割内核 Start() 阶段的 WARN（最多等 ${SANDBOX_WAIT} 秒）" >&2
+  if ! _sb_probe_socks "$BIN" "$sbcfg" "$port" "$wd" >&2; then
+    # 远程规则集下不到时进程死在 initialize rule-set，DNS 那几条 WARN 根本走不到 ——
+    # 日志有多少算多少，但要说清它不完整。
+    warn "沙箱没建链，沙箱日志档可能不完整（规则集下不到时 DNS 阶段的 WARN 不会出现）" >&2
+  fi
+  [ -s "$wd/run.log" ] || return 1
+  printf '%s' "$wd/run.log"
 }
 
 # 把 _cfg_audit 的 TAB 行渲染成人话，并按 tier 定退出码：
@@ -3093,7 +3122,6 @@ cmd_config() {
           *) die "config audit: 未知参数 $1（--config <path> | --apply | --deep）" ;;
         esac
       done
-      [ "$a_deep" = 0 ] || die "--deep（/rules 语义 diff）尚未实现"
       # 互斥：--apply 的回退点是 backup_config，那套只认 $CFG。允许 --apply --config
       # 就等于要么新造一套备份机制，要么让改写落在一个没有回退点的文件上。
       if [ "$a_apply" = 1 ] && [ -n "$a_cfg" ]; then
@@ -3109,7 +3137,13 @@ cmd_config() {
       # root，测试才能全离线。不给就审 $CFG（644，普通用户读得到）。
       [ -n "$a_cfg" ] || a_cfg="$CFG"
       [ -f "$a_cfg" ] || die "找不到配置：$a_cfg"
-      _cfg_audit_report "$a_cfg"
+      # --deep：沙箱日志档（D 路）。裸审查是毫秒级离线的，这一档要起沙箱、要网络（冷
+      # cache 得把远程规则集全下一遍），所以是 opt-in。无网络就降级并明说，退出码按 A/B/C。
+      local runlog=""
+      if [ "$a_deep" = 1 ]; then
+        runlog=$(_cfg_deep_runlog "$a_cfg") || runlog=""
+      fi
+      _cfg_audit_report "$a_cfg" "$runlog"
       return $? ;;
     *) die "config: 未知子命令 $1（show|backup|list|diff|restore|audit）" ;;
   esac
@@ -3679,7 +3713,14 @@ cmd_update() {
   # 内核版本变了，废弃面和 schema 跟着变 —— 这是最该重查一次配置现代性的时刻，
   # 也正是「21 条 download_detour 悄悄变成历史」这件事的成因。只报不改，且**不**
   # 影响 update 的退出码与回滚判定：配置将来会坏，不等于这次升级失败了。
-  _cfg_audit_notice "$CFG"
+  # 阶段 1 的沙箱是用新内核跑的，它的 run.log 顺手喂给 D 路——Start() 阶段的 WARN
+  # 只有实跑才有，这里不多起一次沙箱。
+  _cfg_audit_notice "$CFG" "$wd/run.log"
+  # 规则集合并匹配语义在 1.14.0 纠正（changelog 注 14）。它没有可离线判定的谓词，
+  # 每次审查都打就是噪音，只在跨过 1.14.0 的这一次升级里说一遍。
+  if ver_gt 1.14.0 "$cur" && ! ver_gt 1.14.0 "$new"; then
+    warn "1.14.0 纠正了规则集的合并匹配语义：只有「单条 default 规则且无 invert」的规则集才并进引用它的规则，其余按「任一条自行命中」处理。靠旧行为才生效的规则要人工核对：https://sing-box.sagernet.org/changelog/#1140"
+  fi
 
   ok "升级完成：${cur} → ${new}"
   info "旧版本保留在 ${BIN}.prev，下一次 update 才会覆盖它"

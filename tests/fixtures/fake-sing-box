@@ -89,6 +89,9 @@ case "${1:-}" in
   run)
     [ "${SB_FAKE_RUN_FAIL:-}" = "$SB_SELF_VERSION" ] && {
       echo "FATAL[0000] start service: bind: address already in use" >&2; exit 1; }
+    # SB_FAKE_RUN_LOG=<路径>：把这份日志原样吐到 stderr，模拟内核 Start() 阶段的 WARN。
+    # config audit 的沙箱日志档（D 路）就是从这里收割的；真内核的 WARN 只在实跑时才打。
+    [ -n "${SB_FAKE_RUN_LOG:-}" ] && [ -f "$SB_FAKE_RUN_LOG" ] && cat "$SB_FAKE_RUN_LOG" >&2
     # 真的把配置里的 mixed 端口占住：沙箱探测要先等端口起来，
     # 不占的话那段等待就是在等一个永远不会发生的事件。
     cfg=""

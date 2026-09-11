@@ -172,20 +172,17 @@ else
   ng "发现没有标注来源 check"
 fi
 
-#-- 9. --deep 是保留位，必须明说尚未实现且非 0 -----------------------------
+#-- 9. --deep：沙箱日志档。无网络时降级并明说，退出码按 A/B/C -------------
 setup
+export SB_FAKE_UDP=dead
 audit --config "$FIX/good-http-client.json" --deep
-if [ "$CODE" != 0 ]; then
-  ok "--deep：退出码非 0（实际 ${CODE}）"
+ran "--deep 无网络"
+if [ "$CODE" = 0 ] && inlog '沙箱日志档'; then
+  ok "--deep 无网络：明说降级（沙箱日志档跳过），退出码按 A/B/C = 0"
 else
-  ng "--deep：期望非 0，实际 0 —— 保留位不能静默放行"
+  ng "--deep 无网络：没明说降级，或退出码 ${CODE} ≠ 0"
 fi
-
-if inlog '尚未实现'; then
-  ok "--deep：明说尚未实现"
-else
-  ng "--deep：没说尚未实现"
-fi
+unset SB_FAKE_UDP
 
 #-- 4/5. --apply：白名单改写 + 重跑发现层归零 ------------------------------
 # 第 3 道（沙箱）默认走降级：SB_FAKE_UDP=dead 让它明确跳过，这样 4/5 两条断言
@@ -712,6 +709,77 @@ if [ -z "$bad_anchor" ]; then
 else
   ng "迁移链接：清单外的锚点（死链）：${bad_anchor}"
 fi
+
+#-- T7. --deep：假内核把 SB_FAKE_RUN_LOG 吐到 stderr，3 条 WARN 全部进报告，来源 run ---
+setup
+export SB_FAKE_UDP=alive SB_FAKE_RUN_LOG="$FIX/sandbox-run.log"
+audit --config "$FIX/good-http-client.json" --deep
+ran "--deep 有日志"
+if [ "$CODE" = 2 ]; then ok "--deep：沙箱日志里的 WARN 让退出码变 2"; else ng "--deep：期望 2，实际 ${CODE}"; fi
+if hit 'deprecated/run] implicit_http_client' && hit 'deprecated/run] dns_rule_strategy' && hit 'deprecated/run] legacy_address_filter'; then
+  ok "--deep：3 条 WARN 全部出现，来源 run（配置里离线定位不到，以条目 id 为路径）"
+else
+  ng "--deep：3 条 WARN 没有全部以来源 run 出现"
+fi
+if inlog '沙箱建链成功'; then ok "--deep：沙箱真的起了（不是走降级）"; else ng "--deep：沙箱没起"; fi
+# 内核 WARN 自带的 strategy 链接是死链，报告里必须以表为准
+if inlog 'sagernet\.org/migration/#migrate-dns-rule-action-strategy-to-rule-items'; then
+  ng "--deep：strategy 那条把内核 WARN 里的死链原样带出来了（应以表为准覆盖）"
+else
+  ok "--deep：strategy 的死链被表覆盖"
+fi
+unset SB_FAKE_RUN_LOG SB_FAKE_UDP
+
+#-- T3（--deep）. store_rdrc 四路全中仍是一行：check+schema+table+run --------------
+setup
+printf 'WARN[0000] `store_rdrc` cache file option is deprecated in sing-box 1.14.0 and will be removed in sing-box 1.16.0, checkout documentation for migration: https://sing-box.sagernet.org/migration/#migrate-store_rdrc\n' > "$ROOT/rdrc.log"
+export SB_FAKE_UDP=alive SB_FAKE_RUN_LOG="$ROOT/rdrc.log"
+audit --config "$FIX/bad-store-rdrc.json" --deep
+ran "store_rdrc --deep"
+if [ "$(grep -c 'experimental.cache_file.store_rdrc' "$LOG")" = 1 ] && hit 'deprecated/check+schema+table+run] experimental.cache_file.store_rdrc'; then
+  ok "store_rdrc --deep：四路全中合并成一行，来源 check+schema+table+run"
+else
+  ng "store_rdrc --deep：没有合并成一行 check+schema+table+run"
+fi
+unset SB_FAKE_RUN_LOG SB_FAKE_UDP
+
+#-- T4（后半）. --deep 喂一份没有 Hysteria 的日志，D 路不能给它添 run ---------------
+setup
+export SB_FAKE_UDP=alive SB_FAKE_RUN_LOG="$FIX/sandbox-run.log"
+audit --config "$FIX/bad-hysteria-tuning.json" --deep
+ran "Hysteria --deep"
+if hit 'schema+table] outbounds[2].recv_window_conn' && ! grep -F 'outbounds[2]' "$LOG" | grep -q 'run'; then
+  ok "Hysteria --deep：来源仍是 schema+table，D 路没误报"
+else
+  ng "Hysteria --deep：D 路给 Hysteria 字段添了 run，或点名丢了"
+fi
+unset SB_FAKE_RUN_LOG SB_FAKE_UDP
+
+#-- T7b. 规则集地址过滤：离线只能 notice，沙箱日志定性后升为 deprecated ------------
+setup
+printf 'WARN[0000] Legacy Address Filter Fields in DNS rules is deprecated in sing-box 1.14.0 and will be removed in sing-box 1.16.0, checkout documentation for migration: https://sing-box.sagernet.org/migration/#migrate-address-filter-fields-to-response-matching\n' > "$ROOT/af.log"
+cp "$FIX/good-http-client.json" "$ROOT/rs.json"
+python3 - "$ROOT/rs.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["dns"] = {"servers": [{"type": "udp", "tag": "dns-direct", "server": "223.5.5.5"}],
+            "rules": [{"rule_set": "geoip-cn", "action": "route", "server": "dns-direct"}], "final": "dns-direct"}
+json.dump(d, open(sys.argv[1], "w"), indent=2)
+PY
+audit --config "$ROOT/rs.json"
+if [ "$CODE" = 0 ] && hit 'notice/table] dns.rules[0]'; then
+  ok "规则集地址过滤：离线只出 notice，退 0"
+else
+  ng "规则集地址过滤：离线没有出 notice 或退出码 ${CODE} ≠ 0"
+fi
+export SB_FAKE_UDP=alive SB_FAKE_RUN_LOG="$ROOT/af.log"
+audit --config "$ROOT/rs.json" --deep
+if [ "$CODE" = 2 ] && hit 'deprecated/table+run] dns.rules[0]'; then
+  ok "规则集地址过滤：--deep 定性后升为 deprecated，来源 table+run，退 2"
+else
+  ng "规则集地址过滤：--deep 没有把 notice 升为 deprecated（退 ${CODE}）"
+fi
+unset SB_FAKE_RUN_LOG SB_FAKE_UDP
 
 echo
 printf '通过 %d，失败 %d\n' "$pass" "$fail"
