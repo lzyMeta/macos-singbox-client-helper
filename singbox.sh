@@ -2399,8 +2399,9 @@ PY
 # 返回值：0 = 审完了（发现写在 stdout），1 = **审不了**（读不到配置、内核起不来）。
 # 这两件事必须分开：把「审不了」报成发现，就是把「配置已经坏了」这个结论强加给
 # 一次根本没做成的检查。
+# $1 配置  $2 沙箱日志路径（可空）  $3 =1 表示沙箱建链成功、日志完整（Start() 走完了）
 _cfg_audit() {
-  local cfg="$1" runlog="${2:-}"
+  local cfg="$1" runlog="${2:-}" complete="${3:-0}"
   local chk rc
 
   # 前置闸门：内核得先能应答。$BIN 损坏、权限不对、根本没装的时候 check 同样
@@ -2657,10 +2658,10 @@ PY
   # A / D 的 WARN 行本身没有路径：先用表条目的 warn 正则认出是哪条，再贴到 C 路命中的
   # 路径上；C 路没命中就以条目 id 当路径单独成行。「removed」只可能来自 A（内核拒绝）。
   local lib; lib=$(mktmp); _cfg_pylib >"$lib"
-  python3 - "$lib" "$cfg" "$raw" "$runlog" "$kver" <<'PY'
+  python3 - "$lib" "$cfg" "$raw" "$runlog" "$kver" "$complete" <<'PY'
 import json, re, sys
 exec(open(sys.argv[1]).read())
-cfg_path, raw_path, runlog, kver = sys.argv[2:6]
+cfg_path, raw_path, runlog, kver, complete = sys.argv[2:7]
 try:
     cfg = json.load(open(cfg_path))
 except Exception:
@@ -2755,6 +2756,12 @@ if runlog:
     except Exception:
         pass
 
+# 反向定性：沙箱建链成功（Start() 走完、规则集都加载了）而内核没打地址过滤的 WARN，
+# 说明那些规则集不含 ip_cidr 条目——离线只能存疑的 notice 到这里有了答案，撤掉。
+# 日志不完整（没建链）时不撤：规则集下不到，DNS 那几条 WARN 根本走不到。
+if runlog and complete == "1":
+    rows = [r for r in rows if not (r["eid"] == "legacy_address_filter_rs" and "run" not in r["src"])]
+
 def enc(sn):
     return "" if not sn else sn.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
 
@@ -2771,14 +2778,15 @@ PY
 # 挂载点专用：只报，不参与调用方的退出码判定，返回值恒为 0。
 # install / update / doctor 各有各的成败判据，配置现代性不该把它们打死 —— 这也是
 # 原先那四处 grep 里唯一正确的部分，收敛时原样保留。
-# $1 配置路径  $2 沙箱日志路径（可空：cmd_update 阶段 1 的沙箱顺手收割，喂给 D 路）
+# $1 配置路径  $2 沙箱日志路径（可空：cmd_update 阶段 1 的沙箱顺手收割，喂给 D 路。
+#    那个沙箱建链失败会直接 die，所以走到这里的日志一定是完整的）
 _cfg_audit_notice() {
   local cfg="$1" runlog="${2:-}"
   [ -f "$cfg" ] || return 0
   local rows; rows=$(mktmp)
   # 审不了就闭嘴退场：这几个挂载点是搭车的，没做成的检查不该在 install / update
   # 的输出里制造噪声，更不该把它们的成败带偏。
-  _cfg_audit "$cfg" "$runlog" >"$rows" 2>/dev/null || return 0
+  _cfg_audit "$cfg" "$runlog" "$([ -n "$runlog" ] && echo 1 || echo 0)" >"$rows" 2>/dev/null || return 0
   # ⚠️ 不写 $(grep -c ... || echo 0)：无命中时 grep 退 1，那个兜底会把计数变成
   # "0\n0"。自检点名过这个形状。
   # notice 档是行为变更提示，不算废弃；挂载点只报 removed / deprecated
@@ -3021,7 +3029,7 @@ HITS
   local left rows4; rows4=$(mktmp)
   # 审不了就不能落地：这一道是漏改的唯一防线，跳过它等于四道只剩三道，
   # 而漏改恰恰是另外三道全挡不住的那一型。
-  _cfg_audit "$new" "$runlog" >"$rows4" \
+  _cfg_audit "$new" "$runlog" "$([ -n "$runlog" ] && echo 1 || echo 0)" >"$rows4" \
     || die "第 4 道没做成（审不了改写结果），拒绝落地（${cfg} 一字未动）"
   # 归零的判据是规则表自己的谓词：三条 auto 规则在新配置上的命中数之和必须是 0。
   left=$(_cfg_auto_hits "$new" | awk -F'\t' '{n += $2} END {print n + 0}')
@@ -3062,7 +3070,7 @@ HITS
   return 0
 }
 
-# --deep 用：起一次沙箱跑 $1，把 run.log 的路径打到 stdout。跑不成返回 1（stdout 为空）。
+# --deep 用：起一次沙箱跑 $1，把 run.log 的路径与「建链是否成功」打到 stdout。跑不成返回 1（stdout 为空）。
 # 沙箱那一套与 --apply 第 3 道同构（_sb_udp_alive → _sb_free_port → _sb_derive_config →
 # _sb_probe_socks），不另起一套：D 路的原则是「凡是已经在跑沙箱的地方顺手收割日志」，
 # --deep 只是让裸审查也起一次。等待沿用 SANDBOX_WAIT：内核在 Start() 阶段就把 WARN 打完，
@@ -3080,21 +3088,24 @@ _cfg_deep_runlog() {
   _sb_derive_config "$cfg" "$sbcfg" "$port" "$wd" || { warn "派生沙箱配置失败，沙箱日志档（--deep）跳过" >&2; return 1; }
   json_valid "$sbcfg" || { warn "派生出来的沙箱配置不是合法 JSON，沙箱日志档（--deep）跳过" >&2; return 1; }
   info "沙箱日志档：起一次沙箱收割内核 Start() 阶段的 WARN（最多等 ${SANDBOX_WAIT} 秒）" >&2
+  local complete=1
   if ! _sb_probe_socks "$BIN" "$sbcfg" "$port" "$wd" >&2; then
     # 远程规则集下不到时进程死在 initialize rule-set，DNS 那几条 WARN 根本走不到 ——
     # 日志有多少算多少，但要说清它不完整。
     warn "沙箱没建链，沙箱日志档可能不完整（规则集下不到时 DNS 阶段的 WARN 不会出现）" >&2
+    complete=0
   fi
   [ -s "$wd/run.log" ] || return 1
-  printf '%s' "$wd/run.log"
+  # stdout：<日志路径><TAB><1|0>。第二栏告诉 D 路「没出现的 WARN」能不能当证据
+  printf '%s\t%s' "$wd/run.log" "$complete"
 }
 
 # 把 _cfg_audit 的 TAB 行渲染成人话，并按 tier 定退出码：
 #   0 干净 / 2 有废弃项但内核仍接受 / 1 内核会拒
 # 与 cmd_verify 的两档约定同构 —— 1 是「现在就坏」，2 是「将来会坏」。
-# $1 配置路径  $2 沙箱日志路径（可空；--deep 或 --apply 第 3 道把它喂进来）
+# $1 配置路径  $2 沙箱日志路径（可空；--deep 把它喂进来）  $3 =1 日志完整（建链成功）
 _cfg_audit_report() {
-  local cfg="$1" runlog="${2:-}"
+  local cfg="$1" runlog="${2:-}" complete="${3:-0}"
   local rows; rows=$(mktmp)
 
   printf '配置审查：%s\n' "$cfg"
@@ -3110,7 +3121,7 @@ _cfg_audit_report() {
   fi
   # 这里是用户直接问的，「审不了」必须说出来 —— 不能拿一个没做成的检查
   # 去打印「没有废弃项」。
-  _cfg_audit "$cfg" "$runlog" >"$rows" \
+  _cfg_audit "$cfg" "$runlog" "$complete" >"$rows" \
     || die "审查没做成（读不到 ${cfg}，或内核跑不起来）—— 这不代表配置没问题"
 
   local n_removed=0 n_deprecated=0 n_notice=0
@@ -3206,11 +3217,13 @@ cmd_config() {
       [ -f "$a_cfg" ] || die "找不到配置：$a_cfg"
       # --deep：沙箱日志档（D 路）。裸审查是毫秒级离线的，这一档要起沙箱、要网络（冷
       # cache 得把远程规则集全下一遍），所以是 opt-in。无网络就降级并明说，退出码按 A/B/C。
-      local runlog=""
+      local runlog="" complete=0 deep_out
       if [ "$a_deep" = 1 ]; then
-        runlog=$(_cfg_deep_runlog "$a_cfg") || runlog=""
+        deep_out=$(_cfg_deep_runlog "$a_cfg") || deep_out=""
+        runlog=$(printf '%s' "$deep_out" | cut -f1)
+        complete=$(printf '%s' "$deep_out" | cut -f2)
       fi
-      _cfg_audit_report "$a_cfg" "$runlog"
+      _cfg_audit_report "$a_cfg" "$runlog" "${complete:-0}"
       return $? ;;
     *) die "config: 未知子命令 $1（show|backup|list|diff|restore|audit）" ;;
   esac

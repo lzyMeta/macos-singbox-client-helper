@@ -498,7 +498,8 @@ WARN 抠出的链接可能是死链（1.14.0 的 `strategy` 那条就是），B 
 
 - `notice` 只有 C 路能给，是**行为变更**不是废弃：1.14.0 起 `dns.rules[].query_type` / `ip_version` 也作用于
   内部解析；引用规则集却没开 `match_response` 的 DNS 规则（离线不知道规则集里有没有 `ip_cidr` 条目，
-  `--deep` 能定性，定性后升为 `deprecated`）。
+  `--deep` 能定性：内核打了地址过滤的 WARN 就升为 `deprecated`；沙箱建链成功而没打，说明规则集不含
+  `ip_cidr`，这条 notice 撤掉。沙箱没建链时不撤——规则集下不到，DNS 那几条 WARN 根本走不到）。
 - 表头 `CFG_TABLE_COVERS=1.14.0`。内核 **minor** 高于它时打一行「迁移表只覆盖到 1.14.0，内核 X 新增的废弃项
   请用 `--deep` 或查 deprecated 页」，退出码不受影响；1.14.9 不打，1.15.0 打。
 - 表里 `removed_in ≤ 内核版本` 但 A 沉默的条目（deprecated 页说 `block` 出站 1.13.0 已移除，实测 1.14.0 仍放行），

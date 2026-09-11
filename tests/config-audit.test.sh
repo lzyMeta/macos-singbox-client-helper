@@ -779,6 +779,20 @@ if [ "$CODE" = 2 ] && hit 'deprecated/table+run] dns.rules[0]'; then
 else
   ng "规则集地址过滤：--deep 没有把 notice 升为 deprecated（退 ${CODE}）"
 fi
+# 反向定性：沙箱建链成功、日志里没有这条 WARN → 规则集不含 ip_cidr，notice 该撤掉，
+# 不能还留着一句「用 --deep 定性」
+export SB_FAKE_RUN_LOG="$FIX/sandbox-run.log"
+python3 - "$FIX/sandbox-run.log" "$ROOT/no-af.log" <<'PY'
+import sys
+open(sys.argv[2], "w").writelines(l for l in open(sys.argv[1]) if "Address Filter" not in l)
+PY
+export SB_FAKE_RUN_LOG="$ROOT/no-af.log"
+audit --config "$ROOT/rs.json" --deep
+if inlog '沙箱建链成功' && ! grep -F '] dns.rules[0]' "$LOG" >/dev/null; then
+  ok "规则集地址过滤：--deep 建链成功且内核没告警 → notice 撤掉"
+else
+  ng "规则集地址过滤：--deep 已定性为「不是遗留用法」，notice 却还在"
+fi
 unset SB_FAKE_RUN_LOG SB_FAKE_UDP
 
 #=============================================================================

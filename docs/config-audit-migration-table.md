@@ -328,7 +328,8 @@ for i in 1 2 3 4 5; do ./tests/run.sh >/dev/null 2>&1 || echo "第 $i 次红"; d
 ### 待定问题的裁定
 
 1. `--deep` 等待时长：沿用 `SANDBOX_WAIT=40`，与第 3 道同一套 `_sb_probe_socks`。
-2. `legacy_address_filter_rs` 的 notice：先按每次都打实现（样例配置会打 2 条），真机嫌吵再改——等 lzyMeta 看过报告。
+2. `legacy_address_filter_rs` 的 notice：裸审查每次都打（真机 live 配置打 2 条）；`--deep` 建链成功而内核没打
+   地址过滤 WARN 时**撤掉**（真机验收时发现原实现定性完仍留着「用 --deep 定性」那句，已补）。裸审查嫌吵再改。
 3. `snippet` 的 `tag`：带 `mig-af-<原规则下标>`，不查撞名，片段不落地。
 4. flaky 根因：基线单跑本来就没红，隔离后 10 次全绿——只能说「隔离后没复现」，不能说根因确认是锁。
 5. `covers` 阈值：按 **minor** 比——把内核版本的 patch 位抹成 0 再用三段的 `ver_gt`（1.14.9 不打，1.15.0 打）。
