@@ -57,7 +57,7 @@ setup() {
 
 teardown() {
   [ -n "$ROOT" ] && rm -rf "$ROOT"
-  rm -rf /tmp/.singbox-sh.lock 2>/dev/null
+  rm -rf "${SB_LOCKDIR:-/tmp/.singbox-sh.lock}" 2>/dev/null
   ROOT=""
 }
 trap teardown EXIT
@@ -510,6 +510,33 @@ if [ "$CODE" != 2 ] || ! grep -q '配置里有' "$LOG"; then
 else
   ng "内核不可用：verify 因第 6 步误判退 2"
 fi
+
+#-- 14. SB_LOCKDIR：锁目录可隔离 -------------------------------------------
+# 锁路径写死在 /tmp 时，测试之间、以及测试与 live 的 singbox 命令共用一把锁：
+# 残留锁的 PID 恰好活着，acquire_lock 等 6 秒就 die。指到临时目录后各跑各的。
+setup
+echo 1 > "$SB_FAKE_STATE/running"
+saved_lockdir="${SB_LOCKDIR:-}"
+export SB_LOCKDIR="$ROOT/lock"
+# (a) 变量真的被认：这个目录里放一把「持有者还活着」的锁，必须撞上
+mkdir -p "$SB_LOCKDIR"; echo "$$" > "$SB_LOCKDIR/pid"
+PATH="$FIXBIN:$PATH" "$SB" --prefix "$ROOT/prefix" -n restart >"$LOG" 2>&1; CODE=$?
+if [ "$CODE" != 0 ] && inlog '另一个 singbox 实例'; then
+  ok "SB_LOCKDIR：指定目录里的活锁被看见了"
+else
+  ng "SB_LOCKDIR：没认这个变量（退出 ${CODE}，没撞上指定目录里的锁）"
+fi
+rm -rf "$SB_LOCKDIR"
+# (b) 背靠背两次，各自拿锁各自放，都不该撞
+for i in 1 2; do
+  PATH="$FIXBIN:$PATH" "$SB" --prefix "$ROOT/prefix" -n restart >"$LOG" 2>&1; CODE=$?
+  if [ "$CODE" = 0 ] && ! inlog '另一个 singbox 实例'; then
+    ok "SB_LOCKDIR：第 ${i} 次 -n restart 干净（退 0）"
+  else
+    ng "SB_LOCKDIR：第 ${i} 次 -n restart 撞锁（退 ${CODE}）"
+  fi
+done
+if [ -n "$saved_lockdir" ]; then export SB_LOCKDIR="$saved_lockdir"; else unset SB_LOCKDIR; fi
 
 echo
 printf '通过 %d，失败 %d\n' "$pass" "$fail"

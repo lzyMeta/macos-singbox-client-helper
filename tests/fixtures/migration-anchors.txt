@@ -1,0 +1,31 @@
+# 从 sing-box v1.14.0 tag 的 docs/migration.md 标题抽出的锚点清单（mkdocs 的 slug 规则：
+# 去掉 :material-xxx: 图标与反引号，小写，非 [A-Za-z0-9_- ] 一律删掉，空格换连字符）。
+# 用途：tests/config-audit.test.sh 断言 13 —— 迁移表里凡是 migration/# 的链接，锚点必须在此清单内。
+# 生成：curl -fsSL https://raw.githubusercontent.com/SagerNet/sing-box/v1.14.0/docs/migration.md | grep '^#' | <本注释的规则>
+1140
+migrate-the-macos-standalone-client-data
+migrate-inline-acme-to-certificate-provider
+migrate-address-filter-fields-to-response-matching
+migrate-independent-dns-cache
+migrate-store_rdrc
+ip_version-and-query_type-behavior-changes-in-dns-rules
+1120
+migrate-to-new-dns-server-formats
+migrate-outbound-dns-rule-items-to-domain-resolver
+migrate-outbound-domain-strategy-option-to-domain-resolver
+1110
+migrate-legacy-special-outbounds-to-rule-actions
+migrate-legacy-inbound-fields-to-rule-actions
+migrate-destination-override-fields-to-route-options
+migrate-wireguard-outbound-to-endpoint
+1100
+tun-address-fields-are-merged
+195
+bundle-identifier-updates-in-apple-platform-clients
+190
+domain_suffix-behavior-update
+process_path-format-update-on-windows
+180
+migrate-cache-file-from-clash-api-to-independent-options
+migrate-geoip-to-rule-sets
+migrate-geosite-to-rule-sets

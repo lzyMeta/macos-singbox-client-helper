@@ -75,7 +75,7 @@ JSON
 
 teardown() {
   [ -n "$ROOT" ] && rm -rf "$ROOT"
-  rm -rf /tmp/.singbox-sh.lock 2>/dev/null
+  rm -rf "${SB_LOCKDIR:-/tmp/.singbox-sh.lock}" 2>/dev/null
   ROOT=""
 }
 trap teardown EXIT

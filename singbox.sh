@@ -66,7 +66,8 @@ LABEL=system/sing-box
 LOGDIR="${SB_LOGDIR:-/var/log}"
 LOGFILE="$LOGDIR/sing-box.log"
 ERRFILE="$LOGDIR/sing-box.err"
-LOCKDIR=/tmp/.singbox-sh.lock
+# SB_LOCKDIR：测试用它把锁指到临时目录，免得与 live 的 singbox 命令、测试之间共用一把
+LOCKDIR="${SB_LOCKDIR:-/tmp/.singbox-sh.lock}"
 PREFS_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/singbox"
 PREFS="$PREFS_DIR/prefs"
 DNS_BACKUP="$PREFS_DIR/dns-backup"

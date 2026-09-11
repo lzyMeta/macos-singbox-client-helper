@@ -10,7 +10,11 @@ rc=0
 for t in tests/*.test.sh; do
   [ -f "$t" ] || continue
   printf '\n=== %s ===\n' "$t"
-  if ! "$t"; then rc=1; fi
+  # 每个测试文件一把自己的锁：默认的 /tmp/.singbox-sh.lock 会跟 live 的 singbox
+  # 命令、以及前一个测试残留的锁撞上，acquire_lock 等 6 秒就 die
+  lockroot=$(mktemp -d)
+  if ! SB_LOCKDIR="$lockroot/lock" "$t"; then rc=1; fi
+  rm -rf "$lockroot"
 done
 
 echo
