@@ -35,6 +35,9 @@
         "README.md",
         "CLAUDE.md"
       ]
+    },
+    "site": {
+      "url": "https://claude.ai/code/artifact/159d07a2-1cdd-4e82-b921-452128721268"
     }
   }
 }
