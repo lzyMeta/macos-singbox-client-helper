@@ -1,0 +1,18 @@
+6d7a3138	6fa69827
+6d7a3138	dbfa2b79
+6d7a3138	e06d327c
+6d7a3138	e5286f5c
+6d7a3138	ffab2684
+6d7a3138	meta	DNS rule inbound field match internal domain resolution resolve action context	2026-09-12
+e959e9bd	7a95d80d
+e959e9bd	98cfde08
+e959e9bd	a8d33820
+e959e9bd	cc33ceae
+e959e9bd	cdd599eb
+e959e9bd	meta	migration 1.14.0 legacy address filter fields response matching DNS rule ip_cidr ip_is_private	2026-09-12
+fd48ad85	3b7cc01c
+fd48ad85	4f4d77a8
+fd48ad85	7011fa9e
+fd48ad85	d0acb0ee
+fd48ad85	dbfa2b79
+fd48ad85	meta	1.14.0 query_type ip_version DNS rule internal resolve semantics change	2026-09-12
