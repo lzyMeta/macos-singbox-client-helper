@@ -4,4 +4,4 @@
 
 | 库 | 片段数 | 体积 | 最近抓取 |
 |---|---|---|---|
-| [sagernet-sing-box](sagernet-sing-box/INDEX.md) | 14 | 14 KB | 2026-09-12 |
+| [sagernet-sing-box](sagernet-sing-box/INDEX.md) | 34 | 32 KB | 2026-09-12 |

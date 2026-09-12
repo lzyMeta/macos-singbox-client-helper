@@ -1,9 +1,39 @@
+178905b4	2b290c7a
+178905b4	2e885d56
+178905b4	30b35cff
+178905b4	5033cacc
+178905b4	cc33ceae
+178905b4	meta	remote rule_set outbound detour new option 1.14 http_proxy	2026-09-10
 6d7a3138	6fa69827
 6d7a3138	dbfa2b79
 6d7a3138	e06d327c
 6d7a3138	e5286f5c
 6d7a3138	ffab2684
 6d7a3138	meta	DNS rule inbound field match internal domain resolution resolve action context	2026-09-12
+832574a3	01460857
+832574a3	052bddc7
+832574a3	d76e16e5
+832574a3	e237007c
+832574a3	fd29b693
+832574a3	meta	ruleProviderRouter provider.go stub not implemented cache router fakeip flush	2026-09-10
+ddccee2a	1d9dd509
+ddccee2a	20f17d6f
+ddccee2a	7c417bde
+ddccee2a	9b802725
+ddccee2a	e2624c49
+ddccee2a	meta	rule_set remote update_interval cache_file clash api providers rules update	2026-09-10
+de167bae	5033cacc
+de167bae	7346e361
+de167bae	a1563051
+de167bae	cc33ceae
+de167bae	d462e774
+de167bae	meta	rule-set download_detour deprecated 1.14 replacement dns server detour migration	2026-09-10
+e72e656f	0a2361c7
+e72e656f	1d9dd509
+e72e656f	3c32f7cf
+e72e656f	e2624c49
+e72e656f	f8d90d45
+e72e656f	meta	clash api providers rules endpoint force update rule set refresh	2026-09-10
 e959e9bd	7a95d80d
 e959e9bd	98cfde08
 e959e9bd	a8d33820
