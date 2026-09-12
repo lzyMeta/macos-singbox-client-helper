@@ -43,11 +43,6 @@ jobs:
           ref: refs/tags/${{ inputs.tag }}
           persist-credentials: false
 
-      - name: 拿 annotation（checkout 只解到 commit，tag 对象要单独 fetch）
-        env:
-          TAG: ${{ inputs.tag }}
-        run: git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
-
       - name: 校验 tag 与版本文件一致
         env:
           TAG: ${{ inputs.tag }}
@@ -58,14 +53,21 @@ jobs:
           [ "$TAG" = "v$VERSION" ] || { echo "::error::tag $TAG ≠ v$VERSION（版本文件里是 $VERSION）"; exit 1; }
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
-      - name: notes
+      - name: notes（inputs.notes 非空取它，否则取 annotated tag 正文）
         env:
+          GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
           NOTES: ${{ inputs.notes }}
         run: |
           set -eu
           if [ -n "$NOTES" ]; then printf '%s\n' "$NOTES" > "$RUNNER_TEMP/notes.md"
-          else git tag -l --format='%(contents)' "$TAG" > "$RUNNER_TEMP/notes.md"; fi
+          else
+            # ⚠️ 不用 git fetch 拿 tag 对象：persist-credentials: false 之后 git 没有凭据，私有仓库上会退 128。
+            #    走 gh api（runner 的 github.token），轻量 tag（object.type != tag）没有正文，落到下面的占位。
+            sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq 'select(.object.type=="tag") | .object.sha' || true)"
+            if [ -n "$sha" ]; then gh api "repos/$GITHUB_REPOSITORY/git/tags/$sha" --jq .message > "$RUNNER_TEMP/notes.md"
+            else : > "$RUNNER_TEMP/notes.md"; fi
+          fi
           [ -s "$RUNNER_TEMP/notes.md" ] || echo "（无 notes）" > "$RUNNER_TEMP/notes.md"
 
       - name: 建 Release
