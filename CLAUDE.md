@@ -17,7 +17,8 @@
 `doctor`（TUN 路由判读：`_tun_route_state` 三处共用）、
 `template`（`config/config.example.json` 过 audit、且与 live 逐键全等——live 读得到才比，只打印路径不打印值；
 网卡名、tun 地址、`external_ui` 三条路径允许值不同，模板留通用值）、
-`docs`（手册对着源头核对：子命令与旗标、README 仓库结构与文档索引、计数、best-practices 配置全文、目录、行号引用）。
+`docs`（手册对着源头核对：子命令与旗标、README 仓库结构与文档索引、计数、best-practices 配置全文、目录、行号引用、
+findings 文档与迁移表里 `fix != auto` 的条目双向一致且每节四段齐全）。
 
 **TUN 路由的判据是两半都要**：上半 `128.0/1`，下半 `0/1` 或 sing-tun v0.9 起的七段
 `1/8 2/7 4/6 8/5 16/4 32/3 64/2`（避开 `0.0.0.0/8`）。只认 `0/1` 会把真机形状误报成「未接管」，

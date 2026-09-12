@@ -796,7 +796,39 @@ if inlog '沙箱建链成功' && ! grep -E '^ *[0-9]+ +提示 ' "$LOG" | grep -F
 else
   ng "规则集地址过滤：--deep 已定性为「不是遗留用法」，notice 却还在"
 fi
+# 撤掉不能是无声的：用户对比两次输出才猜到「大概没事」，报告得自己说
+if grep -qF -- '--deep 已排除 1 条：dns.rules[0] 引用的规则集经沙箱确认不含 IP 条目' "$LOG"; then
+  ok "规则集地址过滤：--deep 撤条时打了一行撤条说明"
+else
+  ng "规则集地址过滤：--deep 撤了 notice 却没说明撤了什么"
+fi
 unset SB_FAKE_RUN_LOG SB_FAKE_UDP
+# 撤了 0 条不打：离线审同一份配置，不该出现撤条说明
+audit --config "$ROOT/rs.json"
+if ! grep -qF -- '--deep 已排除' "$LOG"; then ok "离线审没有撤条说明"; else ng "离线审也打了「--deep 已排除」"; fi
+
+#-- T14. 解读链接：fix != auto 的条目详情区多一行「解读：<DOC_FINDINGS_URL>#<id>」；
+#   仓库模板两条 notice 都命中，且 legacy_address_filter_rs 的「怎么办」不跑 --deep 也能先自判 ----
+audit --config config/config.example.json
+doc_url=$(grep -o '^DOC_FINDINGS_URL="[^"]*"' "$SB" | sed 's/^[^"]*"//; s/"$//')
+if [ -n "$doc_url" ] && inlog "    解读：${doc_url}#query_type_ip_version_semantics" \
+   && inlog "    解读：${doc_url}#legacy_address_filter_rs"; then
+  ok "模板配置：两条 notice 的详情区都有解读链接"
+else
+  ng "模板配置：详情区缺解读链接（DOC_FINDINGS_URL=${doc_url:-空}，退 ${CODE}）" "$(grep -n '解读' "$LOG")"
+fi
+if row '提示' 'dns.rules[1]' '规则集是 geoip/IP 类才算；纯域名（geosite-*）可忽略，拿不准用 --deep 定性'; then
+  ok "模板配置：legacy_address_filter_rs 的「怎么办」给了自判依据"
+else
+  ng "模板配置：legacy_address_filter_rs 的「怎么办」还是旧短语" "$(grep -E '^ *[0-9]+ +提示 ' "$LOG")"
+fi
+# auto 条目没有解读行：download_detour 走 --apply，文档不写它
+audit --config "$FIX/bad-download-detour.json"
+if [ -n "$doc_url" ] && ! inlog "解读：${doc_url}#download_detour"; then
+  ok "auto 条目没有解读行"
+else
+  ng "auto 条目也打了解读行（文档里没有这一节）" "$(grep -n '解读' "$LOG")"
+fi
 
 #=============================================================================
 # 改写层：3 条纯键名规则共用一张规则表 —— docs/config-audit-migration-table.md

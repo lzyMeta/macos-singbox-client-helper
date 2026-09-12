@@ -112,6 +112,41 @@ done
 hits=$(grep -nE 'singbox\.sh:[0-9]+' $MANUALS)
 if [ -z "$hits" ]; then ok "手册里没有 singbox.sh:行号 式引用"; else ng "手册里有会烂掉的行号引用" "$hits"; fi
 
+#-- 9. findings 文档 ↔ 迁移表：fix 不是 auto 的每个 id 在文档里有且只有一节 `### <id>`，反向每个
+#      `### ` 都是表里现存的 id；每节四段小标题齐全；DOC_FINDINGS_URL 指的文件名与 docs/ 实际一致 ----
+# id 与 fix 不在同一行，用 awk 在 TABLE 区间里配对；不 source 脚本
+FINDINGS=docs/config-audit-findings.md
+ids=$(sed -n '/^TABLE = \[/,/^\]/p' singbox.sh | awk '
+  /\{"id": "/ { match($0, /"id": "[a-z0-9_]+"/); id = substr($0, RSTART + 7, RLENGTH - 8) }
+  /"fix": "/   { match($0, /"fix": "[a-z]+"/); f = substr($0, RSTART + 8, RLENGTH - 9); if (f != "auto") print id }')
+n_ids=$(printf '%s\n' "$ids" | grep -c .)
+[ "$n_ids" -ge 2 ] || ng "从迁移表抓不到 fix != auto 的 id（awk 配对失效，抓到 ${n_ids} 个）"
+if [ ! -f "$FINDINGS" ]; then
+  ng "${FINDINGS} 不存在——迁移表里 ${n_ids} 条只报不改的条目没有解读"
+else
+  bad=""
+  for id in $ids; do
+    c=$(grep -c "^### ${id}\$" "$FINDINGS")
+    [ "$c" = 1 ] || bad="${bad}「${id}：${c} 节」"
+  done
+  while IFS= read -r h; do
+    printf '%s\n' "$ids" | grep -qx "$h" || bad="${bad}「文档多出 ${h}」"
+  done <<< "$(grep '^### ' "$FINDINGS" | sed 's/^### //')"
+  if [ -z "$bad" ]; then ok "findings 文档与迁移表双向一致（${n_ids} 条）"; else ng "findings 文档与迁移表不一致" "$bad"; fi
+  # 每节四段：从 `### id` 到下一个 `### ` / `## ` 之间，四个加粗小标题一个都不能少
+  lack=$(awk -v want='问题是什么 模板里的例子 怎么判断 改成什么样' '
+    function flush(   i, n, w) { if (sec == "") return; n = split(want, w, " ")
+      for (i = 1; i <= n; i++) if (index(body, "**" w[i] "**") == 0) printf "%s 缺「%s」\n", sec, w[i] }
+    /^### / { flush(); sec = substr($0, 5); body = ""; next }
+    /^## /  { flush(); sec = ""; next }
+    { body = body "\n" $0 }
+    END { flush() }' "$FINDINGS")
+  if [ -z "$lack" ]; then ok "findings 每节四段齐全"; else ng "findings 有节缺段" "$lack"; fi
+  url=$(grep -o '^DOC_FINDINGS_URL="[^"]*"' singbox.sh | sed 's/^[^"]*"//; s/"$//')
+  if [ -n "$url" ] && [ "docs/$(basename "$url")" = "$FINDINGS" ]; then ok "DOC_FINDINGS_URL 指向 ${FINDINGS}"
+  else ng "DOC_FINDINGS_URL 与文档文件名对不上" "常量：${url:-（没抓到）}"$'\n'"文件：${FINDINGS}"; fi
+fi
+
 echo
 printf '通过 %d，失败 %d\n' "$pass" "$fail"
 [ "$fail" = 0 ]

@@ -135,6 +135,7 @@ cp config/config.example.json config.json && $EDITOR config.json   # 换掉 7 �
 | 文档 | 读它干什么 |
 |---|---|
 | **[docs/best-practices.md](docs/best-practices.md)** | 为什么这么配。配置逐字段详解、系统层准备、验证清单、故障排查、脚本的设计取舍 |
+| [docs/config-audit-findings.md](docs/config-audit-findings.md) | `config audit` 结论解读：只报不改的 19 条各是什么问题、拿模板举例、怎么判断要不要改、改成什么样 |
 | [docs/maintaining.md](docs/maintaining.md) | 维护者手册：验收、文档怎么不漂移、迁移表怎么更新 |
 
 `best-practices.md` 里几个容易踩的点：
@@ -154,6 +155,7 @@ cp config/config.example.json config.json && $EDITOR config.json   # 换掉 7 �
 | [docs/self-install-and-self-update.md](docs/self-install-and-self-update.md) | `install` 装 `singbox` 命令，`update` 阶段 S 脚本自更新 |
 | [docs/config-audit-and-modernize.md](docs/config-audit-and-modernize.md) | `config audit` 第一轮：两路发现层 + `--apply` |
 | [docs/config-audit-migration-table.md](docs/config-audit-migration-table.md) | `config audit` 第二轮：四路发现层、迁移表、三条改写规则 |
+| [docs/config-audit-findings-guide.md](docs/config-audit-findings-guide.md) | `config audit` 第三轮（规格）：每条「怎么办」的解读文档、`--deep` 撤条说明 |
 
 ---
 
@@ -191,6 +193,8 @@ cp config/config.example.json config.json && $EDITOR config.json   # 换掉 7 �
     ├── manual-config.md       操作手册：改配置与配置审查
     ├── manual-update.md       操作手册：升级、回退与卸载
     ├── best-practices.md      方案文档与字段详解
+    ├── config-audit-findings.md
+    │                          config audit 结论解读：19 条只报不改的条目各一节
     ├── maintaining.md         维护者手册
     ├── safe-update.md         设计记录：update 四阶段 + rollback
     ├── verify-hardening.md    设计记录：verify 收紧
@@ -198,8 +202,10 @@ cp config/config.example.json config.json && $EDITOR config.json   # 换掉 7 �
     │                          设计记录：singbox 命令自动安装与脚本自更新
     ├── config-audit-and-modernize.md
     │                          设计记录：config audit 第一轮
-    └── config-audit-migration-table.md
-                               设计记录：config audit 第二轮（迁移表）
+    ├── config-audit-migration-table.md
+    │                          设计记录：config audit 第二轮（迁移表）
+    └── config-audit-findings-guide.md
+                               规格：config audit 第三轮（结论解读文档）
 ```
 
 `.gitignore` 已排除 `config.json`、`*.bak`、`ui/`、`cache.db` 等本地产物——**填好参数的配置不要提交**。

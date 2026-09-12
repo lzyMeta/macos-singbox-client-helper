@@ -90,6 +90,10 @@ GH_SELF_API="https://api.github.com/repos/${SELF_REPO}/releases/latest"
 GH_SELF_API_REPO="https://api.github.com/repos/${SELF_REPO}"
 GH_SELF_DL="https://github.com/${SELF_REPO}/releases/download"
 GH_SELF_RELEASES="https://github.com/${SELF_REPO}/releases/latest"
+# config audit 报告里「解读」链接的前缀：迁移表里 fix != auto 的每条在这份文档里各有一节
+# `### <id>`，报告详情区按 #<id> 锚过去。文档不装到本机，离线看不到是接受的代价。
+# tests/docs.test.sh 从这一行抓文件名与 docs/ 实际文件核对，改文件名两边一起改。
+DOC_FINDINGS_URL="https://github.com/lzyMeta/macos-singbox-client-helper/blob/main/docs/config-audit-findings.md"
 
 # 前缀式镜像：把完整的 github 链接接在后面即可。
 # 这类站点更替频繁，脚本一律先探测再用，探不通就换下一个。
@@ -1799,7 +1803,7 @@ except Exception: print("")' 2>/dev/null)
     ok "配置里没有废弃字段，也没有未知键"
   else
     vpbad "配置里有 ${n_audit} 处废弃/未知字段 —— 跑 $(basename "$0") config audit"
-    grep -v '^notice' "$audit_rows" | cut -f1-4 | sed 's/^/        /' | cut -c1-160 >&2
+    grep -vE '^(notice|dropped)' "$audit_rows" | cut -f1-4 | sed 's/^/        /' | cut -c1-160 >&2
   fi
   fi
 
@@ -2105,7 +2109,7 @@ TABLE = [
      "link": "https://sing-box.sagernet.org/migration/#migrate-address-filter-fields-to-response-matching",
      "note": "DNS 规则带 ip_cidr / ip_is_private / ip_accept_any 却没开 match_response —— 键合法、用法废弃（1.14.0），"
              "1.16.0 起拒绝。改为 evaluate 取响应 + match_response 匹配"},
-    {"id": "legacy_address_filter_rs", "action": "--deep 定性；是的话改 evaluate + match_response", "match": {"kind": "usage", "name": "legacy_address_filter_rs"},
+    {"id": "legacy_address_filter_rs", "action": "规则集是 geoip/IP 类才算；纯域名（geosite-*）可忽略，拿不准用 --deep 定性", "match": {"kind": "usage", "name": "legacy_address_filter_rs"},
      "deprecated_in": "1.14.0", "removed_in": "1.16.0", "tier": "notice", "stage": "start",
      "warn": None, "fix": "report",
      "link": "https://sing-box.sagernet.org/migration/#migrate-address-filter-fields-to-response-matching",
@@ -2771,8 +2775,10 @@ if runlog:
 # 日志不完整（没建链）时不撤：规则集下不到，DNS 那几条 WARN 根本走不到。
 # 配置里另有直接的地址过滤规则时也不撤：那条 WARN 全局只打一次（v1.14.0 dns/router.go:156
 # 是 common.Any(newRules, WithAddressLimit)），有它说明不了 rule_set 那几条是不是遗留用法。
+dropped = []
 if runlog and complete == "1" and not any(r["eid"] == "legacy_address_filter" for r in rows):
-    rows = [r for r in rows if not (r["eid"] == "legacy_address_filter_rs" and "run" not in r["src"])]
+    dropped = [r for r in rows if r["eid"] == "legacy_address_filter_rs" and "run" not in r["src"]]
+    rows = [r for r in rows if r not in dropped]
 
 def enc(sn):
     return "" if not sn else sn.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
@@ -2781,9 +2787,20 @@ def natkey(p):
     # rule_set[10] 要排在 rule_set[2] 之后：把路径里的数字段按整数比
     return [int(x) if x.isdigit() else x for x in re.split(r"(\d+)", p)]
 rows.sort(key=lambda r: (-RANK[r["tier"]], r["path"] in ("-", ""), natkey(r["path"])))
+def doc_id(r):
+    # 第 8 列：有解读文档的条目 id（fix != auto 才有一节；A / B 路的表外发现没有 id）
+    e = BY_ID.get(r["eid"]) if r["eid"] else None
+    return r["eid"] if e is not None and e.get("fix") != "auto" else ""
 for r in rows:
     src = "+".join(x for x in SRC_ORDER if x in r["src"])
-    out = [r["tier"], src, r["path"], r["desc"], r["url"], enc(r["snippet"]), r["action"] or ""]
+    out = [r["tier"], src, r["path"], r["desc"], r["url"], enc(r["snippet"]), r["action"] or "", doc_id(r)]
+    sys.stdout.write("\t".join(out) + "\n")
+# 撤掉的不能无声：报告端拿这一行在表格后面说明「--deep 排除了什么、为什么」。
+# tier=dropped 不进表格也不进退出码；挂载点（_cfg_audit_notice）跳过它。
+if dropped:
+    paths = " ".join(sorted(set(r["path"] for r in dropped), key=natkey))
+    out = ["dropped", "run", paths, "引用的规则集经沙箱确认不含 IP 条目，不是废弃的地址过滤用法", "", "", "",
+           "legacy_address_filter_rs"]
     sys.stdout.write("\t".join(out) + "\n")
 PY
 }
@@ -2809,7 +2826,7 @@ _cfg_audit_notice() {
   local tier source path desc url snippet
   while IFS="$(printf '\t')" read -r tier source path desc url snippet; do
     [ -n "$tier" ] || continue
-    [ "$tier" = notice ] && continue
+    case "$tier" in notice|dropped) continue ;; esac
     printf '        [%s/%s] %s —— %s\n' "$tier" "$source" "$path" "$desc" >&2
   done <"$rows"
   return 0
@@ -3140,9 +3157,9 @@ _cfg_audit_report() {
   # 表格四列只放看得懂的东西——结论 / 在哪 / 谁发现的 / 怎么办；原委、链接、建议片段按编号
   # 放到「详情」。列宽按东亚宽度对齐，bash 里算不了。
   local tbl det sum; tbl=$(mktmp); det=$(mktmp); sum=$(mktmp)
-  python3 - "$rows" "$tbl" "$det" "$sum" <<'PY'
+  python3 - "$rows" "$tbl" "$det" "$sum" "$DOC_FINDINGS_URL" <<'PY'
 import re, sys, unicodedata
-rows_path, tbl_path, det_path, sum_path = sys.argv[1:5]
+rows_path, tbl_path, det_path, sum_path, doc_url = sys.argv[1:6]
 TIER = {"removed": "起不来", "deprecated": "将来会坏", "notice": "提示"}
 SRC = (("check", "check"), ("schema", "schema"), ("table", "表"), ("run", "run"))
 
@@ -3167,18 +3184,21 @@ for line in open(rows_path):
     f = line.rstrip("\n").split("\t")
     if len(f) < 3:
         continue
-    while len(f) < 7:
+    while len(f) < 8:
         f.append("")
-    rows.append(dict(tier=f[0], src=f[1], path=f[2], desc=f[3], url=f[4], snippet=dec(f[5]), action=f[6]))
+    rows.append(dict(tier=f[0], src=f[1], path=f[2], desc=f[3], url=f[4], snippet=dec(f[5]), action=f[6], doc=f[7]))
+# --deep 撤掉的 notice 单独成行说明，不进表格、不进详情、不进计数
+dropped = [r for r in rows if r["tier"] == "dropped"]
+rows = [r for r in rows if r["tier"] != "dropped"]
 
 # 同一问题合并：结论 + 原委 + 链接 + 怎么办 相同就是同一项
 groups = []
 for r in rows:
-    key = (r["tier"], r["desc"], r["url"], r["action"])
+    key = (r["tier"], r["desc"], r["url"], r["action"], r["doc"])
     g = next((g for g in groups if g["key"] == key), None)
     if g is None:
         g = {"key": key, "tier": r["tier"], "desc": r["desc"], "url": r["url"], "action": r["action"],
-             "paths": [], "src": set(), "snips": []}
+             "doc": r["doc"], "paths": [], "src": set(), "snips": []}
         groups.append(g)
     g["paths"].append(r["path"])
     g["src"].update(x for x in r["src"].split("+") if x)
@@ -3218,6 +3238,10 @@ with open(tbl_path, "w") as out:
         out.write(" " + "  ".join(pad(head[c], widths[c]) for c in range(5)).rstrip() + "\n")
         for x in lines:
             out.write(" " + "  ".join(pad(x[c], widths[c]) for c in range(5)).rstrip() + "\n")
+    if dropped:
+        # 撤了 0 条不打；有就说清撤了哪几处、凭什么撤
+        out.write("\n" if lines else "")
+        out.write(" --deep 已排除 %d 条：%s\n" % (len(dropped), "；".join("%s %s" % (r["path"], r["desc"]) for r in dropped)))
 
 with open(det_path, "w") as out:
     if groups:
@@ -3226,6 +3250,8 @@ with open(det_path, "w") as out:
         out.write(" %d  %s\n" % (i, g["desc"]))
         if g["url"]:
             out.write("    %s\n" % g["url"])
+        if g["doc"] and doc_url:
+            out.write("    解读：%s#%s\n" % (doc_url, g["doc"]))
         paths = sorted(set(g["paths"]), key=natkey)
         if len(paths) > 1:
             out.write("    位置：%s\n" % " ".join(paths))

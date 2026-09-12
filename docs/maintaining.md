@@ -67,6 +67,9 @@
 5. 文档与内核互有遗漏，两个方向都有：内核 WARN 给的链接可能是死链（1.14.0 的 `strategy`）；deprecated 页会漏
    （Hysteria v1 调优字段、`tun.endpoint_independent_nat`）；也会说已移除而内核仍接受（`block` 出站）。
    每条的 `note` 里把这类出入写清楚。
+6. `fix` 不是 `auto` 的条目，**同时**在 [config-audit-findings.md](config-audit-findings.md) 加一节 `### <id>`，
+   四段（问题是什么 / 模板里的例子 / 怎么判断 / 改成什么样）都要写——报告详情区的「解读」链接锚到这一节。
+   `tests/docs.test.sh` 第 9 项把表与文档双向钉死：多一条、少一节、缺一段都红。
 
 四路发现层为什么缺一不可、`--apply` 四道验收各挡哪类错，见设计记录
 [config-audit-migration-table.md](config-audit-migration-table.md)。
