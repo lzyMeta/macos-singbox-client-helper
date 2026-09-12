@@ -1043,6 +1043,7 @@ ifconfig en0 | grep inet6
 > **哪些 inet6 是正常的，不用管：**
 > * `fe80::…` —— 链路本地地址，出不了本地网段，测试站也用不到它。
 > * `::1 prefixlen 128` —— 环回地址，在 `lo0` 上，等价于 IPv6 版的 `127.0.0.1`。它是系统内部通信用的，**关不掉也不该关**，很多本地服务依赖它。
+> * `fdxx:…`（ULA，`fd00::/8`）—— 公网不可路由。macOS 上多半挂在某块 `utunN` 上，是点对点隧道自己配的内网段：插着 iPhone 跑 Xcode 时 CoreDevice 的设备隧道（`mtu 16000`，`fdxx::2` 对 `fdxx::1`）、Docker/OrbStack 的虚拟网卡都是这形状。`syscheck` / `verify` 会另起一行点名它，但不算泄漏、不报 ✗。
 >
 > **要消除的只有全局地址**：`2xxx:` / `2409:` / `240e:` 这类开头、且出现在 `en0` 等物理网卡上的。只要它们没了，就算关干净了。
 
@@ -1357,7 +1358,7 @@ done
 
 ```bash
 dig +short www.google.com            # 真实 Google 地址，不是 157.240.x.x 这类污染答案
-ifconfig | grep inet6                # 只应剩 fe80:: 与 ::1
+ifconfig | grep inet6                # 只应剩 fe80:: 与 ::1（utun 上的 fdxx:: ULA 也没关系）
 ```
 
 * `https://dnsleaktest.com` → Extended Test，结果里**不应出现本地运营商**

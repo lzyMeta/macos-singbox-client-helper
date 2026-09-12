@@ -1472,6 +1472,27 @@ except Exception: pass" 2>/dev/null)
 #=======================================================================
 # syscheck
 #=======================================================================
+# IPv6 地址分两筐看。syscheck / verify 要抓的是**能出公网**的地址——运营商分下来的
+# 2000::/3，那才是绕开代理的漏洞。fc00::/7（ULA，实际都是 fd 开头）在公网上不可路由，
+# 而 macOS 上最常见的来源是点对点隧道自己配的内网段：Xcode 的 CoreDevice 设备隧道
+# （utunN，mtu 16000，fdxx::2 对 fdxx::1）、Thunderbolt 直连、Docker/OrbStack 的
+# 虚拟网卡。把它们当「全局 IPv6」报 ✗，用户关不掉、也不该关——2026-09-12 真机上
+# 插着 iPhone 跑 xcodebuild 时就被这样误报过。
+# fe80::（链路本地）与 ::1（环回）照旧不算——但要钉在地址开头：旧写法 grep -v '::1 '
+# 会把 2409:...::1 这种以 ::1 结尾的公网地址一并滤掉（路由器/静态分配最爱这么配），
+# 真泄漏反而报绿。
+_sb_v6_lines() { ifconfig 2>/dev/null | grep inet6 | grep -v -E 'inet6 (fe80:|::1 )'; }
+_sb_v6_global() { _sb_v6_lines | grep -v -E 'inet6 f[cd][0-9a-f]{2}:'; }
+_sb_v6_ula()    { _sb_v6_lines | grep -E 'inet6 f[cd][0-9a-f]{2}:'; }
+# 有 ULA 时提一句，让用户知道它被看见了、也知道为什么不算
+_sb_v6_ula_note() {
+  local ula; ula=$(_sb_v6_ula)
+  [ -n "$ula" ] || return 0
+  [ "$QUIET" = 1 ] && return 0
+  dim "另有 ULA（fd00::/8）地址，公网不可路由、不算泄漏——多半是 Xcode 设备隧道或虚拟网卡："
+  printf '%s\n' "$ula" | sed 's/^[[:space:]]*/        /'
+}
+
 cmd_syscheck() {
   step "系统层复查"
   dim "IPv6 与 DNS 按网络服务生效、不会继承 —— 换网络、插网卡、VPN 退出没还原都会留缺口"
@@ -1494,15 +1515,16 @@ cmd_syscheck() {
 
   step "IPv6 实际状态"
   local v6addr
-  v6addr=$(ifconfig 2>/dev/null | grep inet6 | grep -v 'fe80::' | grep -v '::1 ')
+  v6addr=$(_sb_v6_global)
   if [ -z "$v6addr" ]; then
     ok "无全局 IPv6 地址"
     dim "fe80::（链路本地）与 ::1（环回）属正常，关不掉也不该关"
   else
     bad "仍有全局 IPv6 地址："
-    printf '%s\n' "$v6addr" | sed 's/^/        /' >&2
+    printf '%s\n' "$v6addr" | sed 's/^[[:space:]]*/        /' >&2
     bad_count=$((bad_count+1))
   fi
+  _sb_v6_ula_note
 
   # 同 cmd_rules：不返回结果的话，自动化只能靠抓输出。
   [ "$bad_count" = 0 ] && return 0
@@ -1742,8 +1764,9 @@ except Exception: print("")' 2>/dev/null)
   dim "浏览器验证：dnsleaktest.com 的 Extended Test 不应出现本地运营商"
 
   step "4/6  IPv6 与 QUIC"
-  local v6; v6=$(ifconfig 2>/dev/null | grep inet6 | grep -v 'fe80::' | grep -v '::1 ')
+  local v6; v6=$(_sb_v6_global)
   [ -z "$v6" ] && ok "无全局 IPv6" || vbad "存在全局 IPv6 —— 跑 syscheck"
+  _sb_v6_ula_note
   if _sb_quic_open; then
     vpbad "QUIC 未被阻断 —— 对端回了版本协商包，UDP/443 出得去"
     info "检查禁 QUIC 规则（udp + 443 + reject）是否在规则表里、是否排在放行规则之前"

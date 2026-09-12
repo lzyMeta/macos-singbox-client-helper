@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# 假 ifconfig。只有 fe80:: 与 ::1，让 verify 第 4 步判定为「无全局 IPv6」。
+# 假 ifconfig。默认只有 fe80:: 与 ::1，让 verify 第 4 步判定为「无全局 IPv6」。
+#   SB_FAKE_V6_ULA=1     多一块 utun8，挂 fdf8::2/64 —— Xcode CoreDevice 设备隧道的形状，不该报
+#   SB_FAKE_V6_GLOBAL=1  en0 多一条 2409::/64 —— 运营商分的公网地址，必须报
 if [ $# -gt 0 ]; then
   case "$1" in
     utun*) [ "${SB_FAKE_NO_TUN:-}" = 1 ] && exit 1
@@ -12,5 +14,11 @@ echo "	inet6 ::1 prefixlen 128"
 echo "en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500"
 echo "	inet6 fe80::1%en0 prefixlen 64 scopeid 0x4"
 echo "	inet 192.168.1.20 netmask 0xffffff00 broadcast 192.168.1.255"
+[ "${SB_FAKE_V6_GLOBAL:-}" = 1 ] && echo "	inet6 2409:8a55:1234:5678::1 prefixlen 64 autoconf secured"
+[ "${SB_FAKE_V6_ULA:-}" = 1 ] && {
+  echo "utun8: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 16000"
+  echo "	inet6 fe80::c2c7:dbff:fe21:953%utun8 prefixlen 64 scopeid 0x1d"
+  echo "	inet6 fdf8:b817:f504::2 prefixlen 64"
+}
 [ "${SB_FAKE_NO_TUN:-}" != 1 ] && echo "utun9527: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 9000"
 exit 0

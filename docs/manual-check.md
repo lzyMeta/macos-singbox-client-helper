@@ -71,6 +71,7 @@ kind: manual
 - **`rules` 报 404** → 分类名不对：`x` 上游可能叫 `twitter`、`meta` 叫 `facebook`、`apple@cn` 有的源写 `apple-cn`。
 - **`doctor` 报「TUN 只接管了一半默认路由」** → 比「未接管」更隐蔽：另一半地址正从 en0 直连。`restart` 后再看。
 - **`syscheck` 报 `fe80::` / `::1`** → 不会。那是链路本地与环回，脚本只报全局地址。
+- **`syscheck` 注了一行 `fdxx::` ULA** → 也不算。多半是 Xcode 设备隧道（插着 iPhone 时 `utunN` 上的 `fdf8:…::2`）或 Docker 的虚拟网卡，公网不可路由；脚本点名它只是让你知道它被看见了。
 
 ## 深入阅读
 

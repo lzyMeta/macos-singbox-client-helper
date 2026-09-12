@@ -70,7 +70,8 @@ JSON
   unset SB_FAKE_VERIFY_FAIL SB_FAKE_DIG_FAIL SB_FAKE_DIG_IP SB_FAKE_HOST_FAIL \
         SB_FAKE_HOST_IP SB_FAKE_DSCACHEUTIL_FAIL SB_FAKE_DSCACHEUTIL_IP \
         SB_FAKE_PY_RESOLVE_FAIL SB_FAKE_CN_IP SB_FAKE_CN_FAIL SB_FAKE_NO_GW \
-        SB_FAKE_PING_FAIL SB_FAKE_IPINFO_FAIL SB_FAKE_IPINFO_JUNK SB_FAKE_PROBE_FAIL
+        SB_FAKE_PING_FAIL SB_FAKE_IPINFO_FAIL SB_FAKE_IPINFO_JUNK SB_FAKE_PROBE_FAIL \
+        SB_FAKE_V6_ULA SB_FAKE_V6_GLOBAL
 }
 
 teardown() {
@@ -185,6 +186,37 @@ if [ "$CODE" = 2 ] && inlog "UDP 整体出不去" && inlog "没有结论"; then
   ok "QUIC 超时且 UDP 对照不通：退出 2，报「没有结论」而不是「已阻断」"
 else
   ng "QUIC 超时且 UDP 对照不通：期望 2 且报没有结论（实际 ${CODE}）"
+fi
+
+#-- 7c. ULA 不是全局 IPv6：Xcode 设备隧道的 fdxx:: 不该报 ✗ ----------------
+# 2026-09-12 真机：插着 iPhone 跑 xcodebuild，CoreDevice 在 utun8 上配了 fdf8:b817:f504::2/64，
+# 原判据「非 fe80、非 ::1 即全局」把它当成泄漏报 ✗，用户关不掉也不该关。
+setup
+SB_FAKE_V6_ULA=1 sb
+if [ "$CODE" = 0 ] && inlog "无全局 IPv6" && inlog "ULA" && inlog "fdf8:b817:f504::2"; then
+  ok "utun 上的 ULA：不报 ✗，退出 0，另起一行点名它是 ULA"
+else
+  ng "utun 上的 ULA：期望 0、报无全局 IPv6 且点名 ULA（实际 ${CODE}）"
+fi
+
+#-- 7d. 真的公网 IPv6 仍然要报：ULA 例外不能把 2000::/3 一起放过 ------------
+# 夹具里的公网地址故意以 ::1 结尾（2409:...::1）：原判据 grep -v '::1 ' 是子串匹配，
+# 会把它当环回滤掉——路由器/静态分配最常见的形状，真泄漏反而报绿。
+setup
+SB_FAKE_V6_GLOBAL=1 sb
+if [ "$CODE" = 1 ] && inlog "存在全局 IPv6"; then
+  ok "en0 上的 2409::：仍报 ✗ 存在全局 IPv6"
+else
+  ng "en0 上的 2409::：期望报存在全局 IPv6（实际 ${CODE}）"
+fi
+
+#-- 7e. 两者同在：ULA 的例外不能遮住旁边的公网地址 --------------------------
+setup
+SB_FAKE_V6_GLOBAL=1 SB_FAKE_V6_ULA=1 sb
+if [ "$CODE" = 1 ] && inlog "存在全局 IPv6" && inlog "ULA"; then
+  ok "ULA 与公网地址同在：公网那条照报，ULA 照注"
+else
+  ng "ULA 与公网地址同在：期望报存在全局 IPv6 且注 ULA（实际 ${CODE}）"
 fi
 
 #-- 8. 国内直连出口 == SOCKS 出口 ---------------------------------------
