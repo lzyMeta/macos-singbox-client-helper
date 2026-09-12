@@ -166,7 +166,7 @@ cp config/config.example.json config.json && $EDITOR config.json   # 换掉 7 �
 ├── singbox.sh                 管理脚本
 ├── singbox-selfcheck.sh       脚本静态自检
 ├── .github/workflows/
-│   └── release.yml            推 v* tag 时校验 tag == VERSION，建 release 并传 singbox.sh
+│   └── release.yml            /sdlc-kit:release 触发（workflow_dispatch）：校验 tag == VERSION，建 release 并传 singbox.sh
 ├── tests/
 │   ├── run.sh                 跑 tests/ 下所有 *.test.sh
 │   ├── cli.test.sh            参数解析

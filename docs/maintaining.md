@@ -12,6 +12,23 @@
 每个测试文件盯什么、运行环境的硬约束（bash 3.2、BSD 工具链、Rosetta 下的架构判定）、
 这台机器上有 live sing-box 时哪些命令不能跑——都在仓库根目录的 `CLAUDE.md`，不在这里重复。
 
+## 发版
+
+两步，两个技能，都不手工敲 `git tag` / `git push` / `gh release`：
+
+```
+/sdlc-kit:tag [patch|minor|major|<版本号>]   # bump singbox.sh 的 VERSION、提交、打 annotated tag、只推这一个 ref
+/sdlc-kit:release                           # 触发 release.yml 建 Release，核实 releases/latest 已指向它
+```
+
+`tag` 打完对用户**不可见**——`update` 阶段 S 读的是 `releases/latest`，不是 tag；`release` 的最后一步
+`sdlc-release verify` 才是「发好了」的凭据。配置在 `.claude/sdlc.json` 的 `release` 节（`channel: release`、
+版本文件 `singbox.sh` 的 `VERSION=` 行、asset `singbox.sh`）；契约三条在 `.github/workflows/release.yml` 文件头。
+⚠️ 换过 `release.yml` 之后要先随一个普通 commit 推到 `main`，`gh workflow run` 才找得到它。
+
+已知限制：`ver_gt()` 把非数字段按 0 处理（`1.3.0-rc.1` 的第三段按 0 算），所以装了 `-rc` 版的用户
+**不会被推到同号正式版**。目前没有给测试者发 rc 的需求；有了再改 `ver_gt()`，不在这里绕。
+
 ## 文档怎么不漂移
 
 两层，各管一半：

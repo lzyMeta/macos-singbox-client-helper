@@ -53,9 +53,13 @@ echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 `rollback` 一并退启动器（`$LAUNCHER.prev` → `$LAUNCHER`），`uninstall` 在整个流程的最后
 一条语句删掉 `$LAUNCHER` 与 `$LAUNCHER.prev`——装的时候是脚本自动放进去的，卸载时就该自动清掉。
 
-发布侧补一个 `.github/workflows/release.yml`：push `v*` tag 时校验 tag 与脚本里的
-`VERSION` 一致，然后建 release 并把 `singbox.sh` 传成 asset。**tag = `v$VERSION`、
-asset 名 = `singbox.sh`** 是脚本自更新与发布流程之间唯一的契约，两边都要照着它写。
+发布侧补一个 `.github/workflows/release.yml`：校验 tag 与脚本里的 `VERSION` 一致，然后建 release 并把
+`singbox.sh` 传成 asset。**tag = `v$VERSION`、asset 名 = `singbox.sh`** 是脚本自更新与发布流程之间
+唯一的契约，两边都要照着它写。
+触发方式在 2026-09-11 改过：原来是 `push: tags: ['v*']`（推 tag 即建 release），现在是 `workflow_dispatch`
+（由 `/sdlc-kit:release` 经 `sdlc-release publish` 显式触发，再核实 `releases/latest`）。改的原因：
+`push: tags` 把 tag 与 release 焊死成 1:1，任何推上去的 `v*` tag 都会挪一次 `latest`；而且本地推完 tag
+什么也证明不了——CI 红了只在 Actions 页有痕迹，`update` 那边什么都拿不到。契约三条不变。
 
 ### 承重的实现约束
 
@@ -106,7 +110,7 @@ asset 名 = `singbox.sh`** 是脚本自更新与发布流程之间唯一的契�
   不会去找它、不会删它、也不会警告它——那需要在未知位置扫描一个同名文件，代价与收益不成比例。
   README 的 2.5 节改写时直接说明「旧的 `~/bin/singbox` 可以自行删掉」。
 - **CI 上不跑 `./singbox-selfcheck.sh && ./tests/run.sh`。** release workflow 只做
-  tag/VERSION 一致性校验与建 release。`tests/` 依赖 PATH 桩、python3 和 bash 3.2 的具体行为，
+  tag/VERSION 一致性校验与建 release（`workflow_dispatch`，不再由推 tag 触发）。`tests/` 依赖 PATH 桩、python3 和 bash 3.2 的具体行为，
   从没在 GitHub macOS runner 上验证过；把它塞进发布闸门，等于让「能不能发版」取决于一件
   从未测过的事。想上 CI 是另一个独立改动。
 - **不做脚本的签名或 GPG 校验。** 沿用内核那套 GitHub API asset digest 的 sha256，
@@ -140,9 +144,10 @@ asset 名 = `singbox.sh`** 是脚本自更新与发布流程之间唯一的契�
 **`singbox-selfcheck.sh`**（修改）：新增第 13 项——禁止 `cp` / `install` 直接覆盖 `$LAUNCHER`。
 注意它自己是**实现文件**不是测试文件（`fix.testGlobs` 锁的是 `tests/**`）。
 
-**`.github/workflows/release.yml`**（新建）：`on: push: tags: ['v*']`，
-`permissions: contents: write`，校验 `git describe` 的 tag 等于 `v$(sed -n 's/^VERSION="\(.*\)"/\1/p' singbox.sh)`，
-不等就退非零；通过则 `gh release create "$TAG" singbox.sh`。
+**`.github/workflows/release.yml`**（新建；2026-09-11 换成 sdlc-kit `templates/release.yml` 的实例）：
+`on: workflow_dispatch`（输入 `tag`、`notes`），`permissions: contents: write`，checkout 按 SHA 钉住且
+`persist-credentials: false`，校验 `inputs.tag` 等于 `v$(sed -n 's/^VERSION="\(.*\)"$/\1/p' singbox.sh)`，
+不等就退非零；通过则 `gh release create "$TAG" singbox.sh`（版本含 `-` 加 `--prerelease`）。
 
 **测试**（新建 / 修改）
 

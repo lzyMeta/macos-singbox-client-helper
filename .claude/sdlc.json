@@ -39,5 +39,24 @@
     "site": {
       "url": "https://claude.ai/code/artifact/159d07a2-1cdd-4e82-b921-452128721268"
     }
+  },
+  "release": {
+    "channel": "release",
+    "version": {
+      "files": [
+        {
+          "path": "singbox.sh",
+          "pattern": "^VERSION=\"(.*)\"$"
+        }
+      ]
+    },
+    "assets": [
+      "singbox.sh"
+    ]
+  },
+  "contracts": {
+    "files": [
+      ".github/workflows/release.yml"
+    ]
   }
 }

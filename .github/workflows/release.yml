@@ -1,21 +1,35 @@
-name: release
-
-# 推 v* tag 时建 release，并把 singbox.sh 传成 asset。
+# release.yml —— sdlc-kit `templates/release.yml` 的实例（prefix=v、asset=singbox.sh、版本读 singbox.sh 的 VERSION=）。
+# 由 /sdlc-kit:release 经 `sdlc-release publish` 用 workflow_dispatch 显式触发；**推 tag 本身不触发任何东西**。
+# 2026-09-11 之前这里是 `on: push: tags: ['v*']`——那把 tag 与 Release 焊死成 1:1，任何推上去的
+# v* tag（含试验 tag）都会出一个 Release、挪一次 latest，用户的下一次 update 就会拉。
 #
-# 这两件事是脚本自更新（cmd_update 阶段 S）与发布流程之间**唯一的契约**：
-#   tag = v$VERSION      asset 名 = singbox.sh
-# 阶段 S 按 tag_name 判新旧、按 $GH_SELF_DL/v<版本>/singbox.sh 取文件，
+# 这两件事是脚本自更新（cmd_update 阶段 S）与发布流程之间**唯一的契约**，改任何一条都要同步
+# .claude/sdlc.json 的 release 节（sdlc-release 读的是那边）：
+#   1. tag = v$VERSION        —— 阶段 S 按 releases/latest 的 tag_name 判新旧
+#   2. asset 名 = singbox.sh   —— 阶段 S 按 releases/download/v<版本>/singbox.sh 取文件
+#   3. notes：inputs.notes 非空取它，否则取 annotated tag 的正文
 # 两边任何一边跑偏，自更新都会静默地什么也不做。
 #
 # ⚠️ 这里**不跑** ./singbox-selfcheck.sh && ./tests/run.sh。tests/ 依赖 PATH 桩、
 # python3 与 bash 3.2 的具体行为，从没在 GitHub 的 macOS runner 上验证过；
-# 把它塞进发布闸门，等于让「能不能发版」取决于一件从未测过的事。
-# 想上 CI 是另一个独立改动。
+# 把它塞进发布闸门，等于让「能不能发版」取决于一件从未测过的事。想上 CI 是另一个独立改动。
+#
+# 凭据边界：能建 Release 的 contents: write 只在 runner 上；本地 agent 只有 git push 与「触发 workflow」。
+# 门（sdlc-kit tests/publish.sh）静态盯三条：checkout 按 40 位 SHA 钉住、persist-credentials: false、只有 workflow_dispatch 没有 push:。
+name: release
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag。必须已推到远端，且等于 v + 版本文件里的版本"
+        required: true
+        type: string
+      notes:
+        description: "Release notes。空则取 annotated tag 的正文"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -24,28 +38,42 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          persist-credentials: false
 
-      - name: tag 必须与 singbox.sh 的 VERSION 一致
+      - name: 拿 annotation（checkout 只解到 commit，tag 对象要单独 fetch）
+        env:
+          TAG: ${{ inputs.tag }}
+        run: git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+
+      - name: 校验 tag 与版本文件一致
+        env:
+          TAG: ${{ inputs.tag }}
         run: |
-          set -euo pipefail
-          tag="$GITHUB_REF_NAME"
-          ver=$(sed -n 's/^VERSION="\(.*\)"/\1/p' singbox.sh | head -1)
-          echo "tag=${tag}  VERSION=${ver}"
-          if [ -z "$ver" ]; then
-            echo "::error::singbox.sh 里读不到 VERSION"
-            exit 1
-          fi
-          if [ "$tag" != "v${ver}" ]; then
-            echo "::error::tag ${tag} 与 singbox.sh 的 VERSION=${ver} 不一致（应为 v${ver}）"
-            exit 1
-          fi
+          set -eu
+          VERSION="$(sed -n 's/^VERSION="\(.*\)"$/\1/p' singbox.sh | head -1)"   # <version-sed>：按 release.version.files[0] 改
+          [ -n "$VERSION" ] || { echo "::error::读不到版本号——那行 sed 与版本文件对不上"; exit 1; }
+          [ "$TAG" = "v$VERSION" ] || { echo "::error::tag $TAG ≠ v$VERSION（版本文件里是 $VERSION）"; exit 1; }
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
-      - name: 建 release 并上传 singbox.sh
+      - name: notes
+        env:
+          TAG: ${{ inputs.tag }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          set -eu
+          if [ -n "$NOTES" ]; then printf '%s\n' "$NOTES" > "$RUNNER_TEMP/notes.md"
+          else git tag -l --format='%(contents)' "$TAG" > "$RUNNER_TEMP/notes.md"; fi
+          [ -s "$RUNNER_TEMP/notes.md" ] || echo "（无 notes）" > "$RUNNER_TEMP/notes.md"
+
+      - name: 建 Release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
         run: |
-          set -euo pipefail
-          gh release create "$GITHUB_REF_NAME" singbox.sh \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes
+          set -eu
+          # 版本号含 `-` 就是预发布：latest 不动，给测试者用。判 VERSION 不判 TAG——前缀里可能就有 `-`
+          PRE=""; case "$VERSION" in *-*) PRE="--prerelease" ;; esac
+          gh release create "$TAG" singbox.sh --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md" --generate-notes $PRE
