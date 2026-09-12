@@ -92,8 +92,10 @@ GH_SELF_DL="https://github.com/${SELF_REPO}/releases/download"
 GH_SELF_RELEASES="https://github.com/${SELF_REPO}/releases/latest"
 # config audit 报告里「解读」链接的前缀：迁移表里 fix != auto 的每条在这份文档里各有一节
 # `### <id>`，报告详情区按 #<id> 锚过去。文档不装到本机，离线看不到是接受的代价。
+# 钉在 v$VERSION 这个 tag 而不是 main：装在本机的脚本与它的迁移表是同一提交，文档也得是——
+# main 往前走了、某条 id 撤了，旧脚本的链接不能跟着断。代价是 tag 推上去之前链接 404。
 # tests/docs.test.sh 从这一行抓文件名与 docs/ 实际文件核对，改文件名两边一起改。
-DOC_FINDINGS_URL="https://github.com/lzyMeta/macos-singbox-client-helper/blob/main/docs/config-audit-findings.md"
+DOC_FINDINGS_URL="https://github.com/${SELF_REPO}/blob/v${VERSION}/docs/config-audit-findings.md"
 
 # 前缀式镜像：把完整的 github 链接接在后面即可。
 # 这类站点更替频繁，脚本一律先探测再用，探不通就换下一个。

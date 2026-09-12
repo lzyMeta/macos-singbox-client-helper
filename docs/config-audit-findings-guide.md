@@ -232,3 +232,6 @@ grep -c '^### ' docs/config-audit-findings.md                                   
   绕开 DNS 规则」两条。另一个更准的判据来自官方迁移页：指定了服务器的解析（`domain_resolver` /
   `default_domain_resolver` / 带 `server` 的动作）**不过 DNS 规则**——模板全配了，所以这条提示对模板实际无影响。
 - 官方片段出处在文档开头注明（GPL-3.0-or-later，引用附链接）。
+- **`DOC_FINDINGS_URL` 钉在 `blob/v${VERSION}` 而不是 `blob/main`**（2026-09-12 打 tag 前改）：装在本机的
+  脚本与它的迁移表是同一提交，链接指向同一提交的文档快照，`main` 往前走、某条 `id` 撤了也不会断旧脚本的链接。
+  代价是 tag 推上去之前链接 404，开发期看本地 md。测试按脚本自己的 `VERSION` / `SELF_REPO` 展开后核对。

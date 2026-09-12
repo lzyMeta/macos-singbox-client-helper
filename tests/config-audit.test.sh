@@ -810,8 +810,11 @@ if ! grep -qF -- '--deep 已排除' "$LOG"; then ok "离线审没有撤条说明
 #-- T14. 解读链接：fix != auto 的条目详情区多一行「解读：<DOC_FINDINGS_URL>#<id>」；
 #   仓库模板两条 notice 都命中，且 legacy_address_filter_rs 的「怎么办」不跑 --deep 也能先自判 ----
 audit --config config/config.example.json
-doc_url=$(grep -o '^DOC_FINDINGS_URL="[^"]*"' "$SB" | sed 's/^[^"]*"//; s/"$//')
-if [ -n "$doc_url" ] && inlog "    解读：${doc_url}#query_type_ip_version_semantics" \
+# 常量里带 ${SELF_REPO} / ${VERSION}，按脚本自己的取值展开：链接钉的是与这份脚本同一提交的 tag
+sb_ver=$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "$SB")
+doc_url=$(grep -o '^DOC_FINDINGS_URL="[^"]*"' "$SB" | sed 's/^[^"]*"//; s/"$//' \
+  | sed "s|\${SELF_REPO}|lzyMeta/macos-singbox-client-helper|; s|\${VERSION}|${sb_ver}|")
+if [ -n "$doc_url" ] && [ -n "$sb_ver" ] && inlog "    解读：${doc_url}#query_type_ip_version_semantics" \
    && inlog "    解读：${doc_url}#legacy_address_filter_rs"; then
   ok "模板配置：两条 notice 的详情区都有解读链接"
 else
