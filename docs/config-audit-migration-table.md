@@ -366,6 +366,14 @@ for i in 1 2 3 4 5; do ./tests/run.sh >/dev/null 2>&1 || echo "第 $i 次红"; d
   第三条（直接地址过滤规则与 rule_set 规则共存时反向定性会误撤 rs 的 notice）用 v1.14.0 `dns/router.go:156`
   定案：`common.Any(newRules, WithAddressLimit)`，WARN **全局只打一次**——所以配置里有直接地址过滤规则时不撤、
   也不升 rs 的 notice；没有直接规则时 WARN 才归 rs 规则（分不出是哪条，全部升为 deprecated）。已补断言修复。
+- **D 路的沙箱探测原本会把别人的监听当成自己的**（2026-09-12，第三轮 review 时 verifier 撞到的 R1 偶发）。
+  `--deep` 与 `--apply` 第 4 道都不持锁，两个 `singbox.sh` 同时 `_sb_free_port` 会拿到同一个端口——它只是
+  bind 一下再放手；`_sb_probe_socks` 又只看「端口有人听」，后起的那个立刻判「建链成功」，随即 `kill` 掉自己那个
+  还没吐日志的沙箱，`run.log` 空 → `[ -s ]` 失败 → D 路整个跳过，报告成「没有废弃项」。串行 30 次不出，
+  并行 20 次出 1 次。判据改为 `_sb_port_listening_by`（`lsof -nP -a -p <pid> -iTCP:<port> -sTCP:LISTEN`，
+  认**自己的 pid** 在听）；端口有人听但不是自己时明说「另一个 singbox.sh 正在起沙箱？」，日志照旧交给 D 路、
+  标为不完整。`config-audit.test.sh` R5 用假内核的 `SB_FAKE_RUN_SQUAT`（别的 pid 占端口、自己活 3 秒退出）
+  守着：改前对着别人的监听打「建链成功」，改后判「没能起来」且 WARN 仍进报告。
 
 ### 人工验收（要动 live，本人跑）
 
