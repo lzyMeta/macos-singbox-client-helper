@@ -3630,6 +3630,16 @@ s = socket.socket(); s.settimeout(1)
 sys.exit(0 if s.connect_ex(("127.0.0.1", int(sys.argv[1]))) == 0 else 1)
 PY
 }
+# 端口 $1 是不是 **进程 $2** 在听。沙箱探测要用这个而不是上面那个：_sb_free_port 只是
+# bind 一下再放手，两个 singbox.sh（audit --deep / --apply 不持锁）同时选端口会拿到同一个；
+# 后起的若只看「有人听」，就把先起的监听当成自己的，然后 kill 掉自己那个还没吐日志的沙箱
+# ——run.log 空，D 路整个跳过，报告成「没有废弃项」（2026-09-12 并行复现 1/20）。
+# lsof 是 macOS 自带的（/usr/sbin）；真内核与假内核（exec python3）都是本进程在听。
+_sb_port_listening_by() {
+  local lsof; lsof=$(command -v lsof || echo /usr/sbin/lsof)
+  [ -x "$lsof" ] || { _sb_port_listening "$1"; return; }     # 没有 lsof 才退回只看端口
+  "$lsof" -nP -a -p "$2" -iTCP:"$1" -sTCP:LISTEN -t >/dev/null 2>&1
+}
 
 # 从现网配置派生一份能在沙箱里跑的：现网服务还在跑的时候，第二个实例会在
 # tun 设备、mixed 端口、cache_file 三处全部撞车。
@@ -3694,11 +3704,15 @@ _sb_probe_socks() {
   i=0
   while [ "$i" -lt "$SANDBOX_WAIT" ]; do
     kill -0 "$pid" 2>/dev/null || break        # 进程已经死了，别再干等
-    if _sb_port_listening "$port"; then up=0; break; fi
+    if _sb_port_listening_by "$port" "$pid"; then up=0; break; fi
     i=$((i + 1)); sleep 1
   done
   if [ "$up" != 0 ]; then
-    bad "沙箱实例没能起来（端口 ${port} 始终没有监听）"
+    if _sb_port_listening "$port"; then
+      bad "沙箱实例没能起来：端口 ${port} 有人在听，但不是沙箱实例（PID ${pid}）——另一个 singbox.sh 正在起沙箱？"
+    else
+      bad "沙箱实例没能起来（端口 ${port} 始终没有监听）"
+    fi
     sed 's/^/      /' "$wd/run.log" >&2
   else
     ip=$(curl -s --max-time 15 -x "socks5h://127.0.0.1:${port}" https://api.ipify.org 2>/dev/null)

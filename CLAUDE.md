@@ -26,7 +26,13 @@ findings 文档与迁移表里 `fix != auto` 的条目双向一致且每节四�
 
 `tests/run.sh` 给每个测试文件一把独立的锁（`SB_LOCKDIR`，`mktemp -d` 下）；`singbox.sh` 的
 `LOCKDIR` 默认 `/tmp/.singbox-sh.lock`，只在测试里用这个变量改。以前测试与 live 的 `singbox`
-命令共用一把锁，teardown 还会顺手删掉 live 的锁——那是连跑偶发红的嫌疑来源。
+命令共用一把锁，teardown 还会顺手删掉 live 的锁——那是连跑偶发红的嫌疑来源之一。
+
+**另一个已证实的偶发根因是并发起沙箱撞端口**：`audit --deep` / `--apply` 不持锁，两个 `singbox.sh`
+同时 `_sb_free_port` 会拿到同一个端口，后起的把先起的监听当成自己的、再 kill 掉自己那个还没吐日志的
+沙箱（2026-09-12 并行复现 1/20）。所以 `_sb_probe_socks` 的判据是 `_sb_port_listening_by`（`lsof -a -p`
+认**自己的 pid** 在听），不是 `_sb_port_listening`；`config-audit.test.sh` 的 R5 用假内核的
+`SB_FAKE_RUN_SQUAT` 守着。两组测试并行跑仍可能各自报「不是沙箱实例」，但那是诚实的失败，D 路照旧收日志。
 
 `selfcheck.test.sh` 验证那 13 项**真的在检查**。两种坏法都踩过，且都不会自己暴露：
 

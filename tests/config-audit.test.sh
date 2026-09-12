@@ -1022,6 +1022,26 @@ else
   ng "路径排序不是自然序或没压缩：${order}"
 fi
 
+#-- R5. 沙箱端口被别的进程占住：不能判成「建链成功」。两个 singbox.sh 同时 _sb_free_port 会拿到
+#   同一个端口，后起的那个若只看「端口有人听」，就会把别人的监听当成自己的，然后 kill 掉自己那个
+#   还没吐日志的沙箱——run.log 空，D 路整个跳过，报告成「没有废弃项」（2026-09-12 并行复现 1/20）。
+setup
+export SB_FAKE_UDP=alive SB_FAKE_RUN_LOG="$FIX/sandbox-run.log" SB_FAKE_RUN_SQUAT=1
+audit --config "$FIX/good-http-client.json" --deep
+ran "沙箱端口被占"
+if ! inlog '沙箱建链成功' && inlog '不是沙箱实例'; then
+  ok "沙箱端口被别的进程占住：判「没能起来」并点名不是自己的监听"
+else
+  ng "沙箱端口被别的进程占住：被当成了自己的（退 ${CODE}）" "$(grep -E '沙箱|将来会坏|废弃' "$LOG")"
+fi
+# 日志照旧交给 D 路：假内核吐完日志才退出，WARN 不能因为建链失败而丢
+if inlog '将来会坏' && row '将来会坏' 'dns_rule_strategy' 'run'; then
+  ok "沙箱端口被占：吐出的 WARN 仍进了报告（来源 run，标为不完整）"
+else
+  ng "沙箱端口被占：run.log 里的 WARN 丢了" "$(grep -E '^ *[0-9]+ ' "$LOG")"
+fi
+unset SB_FAKE_RUN_SQUAT SB_FAKE_RUN_LOG SB_FAKE_UDP
+
 echo
 printf '通过 %d，失败 %d\n' "$pass" "$fail"
 [ "$fail" = 0 ]
