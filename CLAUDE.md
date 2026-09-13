@@ -46,6 +46,10 @@ findings 文档与迁移表里 `fix != auto` 的条目双向一致且每节四�
 Stop 闸门开着（`check.stopHook = "on-edit"`）：改完代码要停下时会自动跑一次，红了停不下来，
 连续两次修不好则放行。改 `**/*.md` / `docs/**` / `.claude/**` 不触发。
 
+`docs.context7.maxCallsPerWindow` 是 15 而不是默认的 3（`735bec9`）：桶按 Claude 会话计（`call_bucket` 优先取
+`sdlc_claude_pid`），不按时间窗滚动，3 次等于「一个会话总共 3 次且不恢复」，对要查 sing-box 配置的会话过紧；
+15 留出余量，同时保住「先 `sdlc-docs grep` 查已有片段」的那点摩擦。
+
 修 `singbox-selfcheck.sh` 本身时它是实现文件而不是测试文件——被 `fix.testGlobs` 锁住的是
 `tests/**`。
 

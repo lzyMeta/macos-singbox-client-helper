@@ -35,5 +35,5 @@ SSH-Key-*.md
 # sdlc-kit 运行态目录
 .claude/.sdlc/
 
-# sdlc-doc site 的产物（352 KB 单文件，每次重生成）；发布用 /sdlc-kit:site，URL 记在 .claude/sdlc.json
+# sdlc-doc site 的产物（412 KB 单文件，每次重生成）；发布用 /sdlc-kit:site，URL 记在 .claude/sdlc.json
 docs/site/

@@ -5,7 +5,12 @@
     "commands": [
       {
         "name": "main",
-        "command": "./singbox-selfcheck.sh && ./tests/run.sh"
+        "command": "./singbox-selfcheck.sh && ./tests/run.sh",
+        "paths": [
+          "singbox.sh",
+          "singbox-selfcheck.sh",
+          "tests/**"
+        ]
       },
       {
         "name": "doc",
@@ -24,7 +29,7 @@
         "sing-box": {
           "id": "/sagernet/sing-box",
           "version": "1.14.0",
-          "commit": false
+          "commit": true
         }
       },
       "maxCallsPerWindow": 15
@@ -33,7 +38,8 @@
       "entry": "README.md",
       "extra": [
         "README.md",
-        "CLAUDE.md"
+        "CLAUDE.md",
+        "AGENTS.md"
       ]
     },
     "site": {

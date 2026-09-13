@@ -15,7 +15,11 @@
       "Bash(sdlc-cfg *)",
       "Bash(sdlc-handoff contract*)",
       "Bash(sdlc-handoff prepare*)",
-      "Bash(sdlc-handoff verify*)"
+      "Bash(sdlc-handoff verify*)",
+      "Bash(./tests/run.sh*)",
+      "Bash(sdlc-doc *)",
+      "Bash(git add *)",
+      "Bash(git commit *)"
     ],
     "deny": [
       "Bash(./singbox.sh*)",

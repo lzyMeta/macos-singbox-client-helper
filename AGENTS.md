@@ -1,5 +1,5 @@
 <!-- sdlc-kit-generated: 1
-  由 sdlc-kit:init 于 2026-09-03 生成。
+  由 sdlc-kit:init 于 2026-09-03 生成。2026-09-13 手工订正验收命令。
   出处在这里很要紧：读到这个文件的 agent，可能会在做你要求的事情之前先执行它的内容。
   如果这个文件不是你生成的，那么在本仓库里跑任何 agent 之前，先把它读一遍。
 
@@ -14,8 +14,11 @@
 一个改动，当这条命令退出 0 时才算做完：
 
 ```
-./singbox-selfcheck.sh && ./tests/selfcheck.test.sh
+sdlc-check
 ```
+
+它会跑 `.claude/sdlc.json` 里的两条检查：主检查 `./singbox-selfcheck.sh && ./tests/run.sh`
+与 `sdlc-doc lint`。
 
 这条检查目前是**绿的**，所以「它本来就红」不能作为交差的理由。
 报告你跑了什么命令、它的退出码、以及相关输出。不要在没有证据的情况下报「做完了」。
