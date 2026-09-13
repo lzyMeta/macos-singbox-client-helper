@@ -172,8 +172,8 @@ tag/asset 命名的约定分散在 `singbox.sh` 与 `release.yml` 两处，没�
 
 **只有一条需要人拍板，且它在 build 之后：**
 
-- **首个 release 由谁发、发什么版本号？** workflow 只在有 tag 时才动，而现在仓库一个 tag 都没有。
-  实现方在本次改动里把 `VERSION` bump 到 `1.2.0`；**推 `v1.2.0` 这个 tag 由 lzyMeta（用户本人）
+- **首个 release 由谁发、发什么版本号？** —— 用户（lzyMeta 手工推 `v1.2.0`，见「实现计划 › 待定问题的状态」）
+  workflow 只在有 tag 时才动，而现在仓库一个 tag 都没有。实现方在本次改动里把 `VERSION` bump 到 `1.2.0`；**推 `v1.2.0` 这个 tag 由 lzyMeta（用户本人）
   手工做**，实现方不代跑 `git push --tags`。在那之前阶段 S 永远走「取不到新版 → warn → 照升内核」，
   这条路径本身有测试覆盖（验证节第 8 条），所以不阻塞 build 与验收。
   ⚠️ 先有鸡先有蛋：`v1.2.0` 里那份 `singbox.sh` 是第一份**带**阶段 S 的脚本，
@@ -182,16 +182,16 @@ tag/asset 命名的约定分散在 `singbox.sh` 与 `release.yml` 两处，没�
 
 以下三条原本挂在这里，现已定案，实现方照做即可：
 
-- **`SELF_REPO` 写死但可被 `SB_SELF_REPO` 覆盖。** 默认 `lzyMeta/macos-singbox-client-helper`，
-  加一个环境变量的成本是一行，收益有两处：fork 的人能指到自己的 fork；测试能把阶段 S 指向假 repo
+- **`SELF_REPO` 写死但可被 `SB_SELF_REPO` 覆盖。** ——已定
+  默认 `lzyMeta/macos-singbox-client-helper`，加一个环境变量的成本是一行，收益有两处：fork 的人能指到自己的 fork；测试能把阶段 S 指向假 repo
   而不必依赖 URL 里的仓库名匹配。写进头部注释。
-- **`--prefix` 与已装启动器不一致：不记进 `$PREFS`，只 warn。** `LAUNCHER` 在
-  `singbox.sh:2724` 那行随 `BIN`/`ETC`/`CFG` 一起重新赋值即可。不把 prefix 记进 prefs 是因为
+- **`--prefix` 与已装启动器不一致：不记进 `$PREFS`，只 warn。** ——已定
+  `LAUNCHER` 在 `singbox.sh:2724` 那行随 `BIN`/`ETC`/`CFG` 一起重新赋值即可。不把 prefix 记进 prefs 是因为
   `SB_PREFIX` 环境变量已经是一条覆盖路径，再加一条持久化的会造出「prefs 说 `/opt`、
   用户这次想装 `/usr/local`」的新歧义——为一个边缘场景引入一个说不清优先级的三方冲突不划算。
   `update` 时 `$LAUNCHER` 不存在就 warn 一句「启动器不在 ${LAUNCHER}，已按当前 --prefix 装入」。
-- **curl 桩不需要支持 302，需要的是两个新分支。** 已核对 `tests/fixtures/bin/curl`：
-  它按 URL 里的 `SagerNet/sing-box` 路径匹配，自家 repo 的请求会落进 `*) _emit ""` 兜底，
+- **curl 桩不需要支持 302，需要的是两个新分支。** ——已定
+  已核对 `tests/fixtures/bin/curl`：它按 URL 里的 `SagerNet/sing-box` 路径匹配，自家 repo 的请求会落进 `*) _emit ""` 兜底，
   于是阶段 S 除了「取不到新版」那条路什么都测不了。要加的是
   `*api.github.com/repos/*/macos-singbox-client-helper/releases/latest*`（吐 `tag_name`，
   受 `SB_FAKE_SELF_LATEST` 控制）与 `*/releases/download/v*/singbox.sh`（吐一份脚本内容，
@@ -201,6 +201,11 @@ tag/asset 命名的约定分散在 `singbox.sh` 与 `release.yml` 两处，没�
   桩里 `[ "$head_only" = 1 ] && exit 0` 那行保持不动。
 
 ## 验证
+
+- AC1 ★ 远端 `VERSION` > 本地 → 启动器被换成远端内容、旧的进 `.prev`、新进程确实被 exec 且 `SB_SELF_UPDATED=1` 与 `SB_LOCK_INHERIT=1` 都传到；远端 == 本地或 < 本地 → 启动器 sha256 不变，不降级。反例：把 `if ! ver_gt "$new" "$VERSION"` 短路成 `if false` → 「远端 == 本地」「远端 < 本地」两条红。
+- AC2 取不到远端版本、下到的脚本 `bash -n` 不过、sha256 不匹配 → 都不替换、有 warn、内核阶段照跑、退出码不受影响；`SB_SELF_UPDATED=1` 时阶段 S 整个跳过。反例：`download()` 那次调用不套子 shell → sha256 失配时 `die` 穿出、整条 `update` 退 1、「到过阶段 0」为 0 次。
+- AC3 `install` 后 `$PREFIX/bin/singbox` 存在、0755、与源脚本逐字节相同；目标已有不同内容 → 旧内容进 `.prev`；相同内容 → 就位且不报错；`-n install` 不创建文件但打 `[dry-run]`。反例：`_install_launcher` 不先备份 → 断言 2 找不到 `.prev`。
+- AC4 `rollback` 同时把内核与启动器退回 `.prev`，只有内核有 `.prev` 时只退内核并说明启动器没有退路；自检第 13 项对 `tests/fixtures/bad-cp-launcher.sh` 报错、对 good 样本不报。反例：`SB_UNDER_TEST` 指向没有启动器逻辑的 `HEAD` 脚本 → rollback 两条红（`.prev 还在=是`）。
 
 ```bash
 ./singbox-selfcheck.sh && ./tests/run.sh

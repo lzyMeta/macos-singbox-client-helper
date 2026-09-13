@@ -170,20 +170,25 @@ docs/config-audit-findings.md
 
 ## 待定问题
 
-- **`kind: design` 能否有第二份**：`sdlc-doc lint` 的 D 规则对 `design` 有没有「仅一份」之类限制，
-  build 第一步跑 `sdlc-doc lint` 验证；不行就换 `kind: manual` 之外的其他合法值，绝不能是 `manual`
+- **`kind: design` 能否有第二份** ——已定（答案见「实现计划」）
+  `sdlc-doc lint` 的 D 规则对 `design` 有没有「仅一份」之类限制，build 第一步跑 `sdlc-doc lint` 验证；不行就换 `kind: manual` 之外的其他合法值，绝不能是 `manual`
   （会撞 D4 的 120 行上限）。责任人：build。
-- **`legacy_address_filter_rs` 的「改成什么样」片段**：`route-options` + `evaluate` + `match_response`
-  的确切写法要对着 v1.14.0 tag 的 `docs/migration.md` 核，不要凭记忆。责任人：build（用 `sdlc-docs`，
+- **`legacy_address_filter_rs` 的「改成什么样」片段** ——已定（答案见「实现计划」）
+  `route-options` + `evaluate` + `match_response` 的确切写法要对着 v1.14.0 tag 的 `docs/migration.md` 核，不要凭记忆。责任人：build（用 `sdlc-docs`，
   库 `/sagernet/sing-box` 1.14.0 已在 `docs.context7.libraries`）。
-- **`query_type_ip_version_semantics` 改法里 `inbound` 字段是否真能排除内部解析**：内部解析的
-  DNS 查询上下文没有 inbound tag 是源码层面的推断（`dns/router.go` 的 `adapter.InboundContext`），
+- **`query_type_ip_version_semantics` 改法里 `inbound` 字段是否真能排除内部解析** ——已定（答案见「实现计划」）
+  内部解析的 DNS 查询上下文没有 inbound tag 是源码层面的推断（`dns/router.go` 的 `adapter.InboundContext`），
   build 时用 `--deep` 沙箱或直接读 v1.14.0 源码确认；确认不了就把「改成什么样」写成
   「删掉本条、改用 `strategy`」这一种。责任人：build。
-- **模板未命中的条目例子来源**：官方迁移页片段是否有版权顾虑——是 MIT/GPL 文档，引用附链接即可，
-  build 时统一在文档开头注一句出处。责任人：build。
+- **模板未命中的条目例子来源** ——已定（答案见「实现计划」）
+  官方迁移页片段是否有版权顾虑——是 MIT/GPL 文档，引用附链接即可，build 时统一在文档开头注一句出处。责任人：build。
 
 ## 验证
+
+- AC1 ★ 迁移表里 `fix != auto` 的每个 id 在 `docs/config-audit-findings.md` 有且只有一节 `### <id>`，反向每个 `### ` 都是表里现存的 id，每节四段小标题齐全（`tests/docs.test.sh` 第 9 项，19 条）。反例：删掉文档里任一节、或把表里一个 id 改名 → 第 9 项红并点名那个 id。
+- AC2 `config audit --config config/config.example.json` 的输出里 `解读：…/docs/config-audit-findings.md#` 行 ≥ 2（`query_type_ip_version_semantics` 与 `legacy_address_filter_rs` 各一），`fix: auto` 的条目没有解读行。反例：报告端不读 TSV 第 8 列 `doc_id` → grep 计数为 0，T14 红。
+- AC3 `legacy_address_filter_rs` 的报告短语含「规则集是 geoip/IP 类才算；纯域名（geosite-*）可忽略，拿不准用 --deep 定性」。反例：文案退回旧句 → `grep -F 'geosite-*'` 无命中。
+- AC4 `--deep` 用 `SB_FAKE_RUN_LOG` 去掉 `Address Filter` 行后，报告打 `--deep 已排除 1 条`；不带 `--deep` 时不打。反例：撤条行无条件打印 → 「离线不打」的反向断言红。
 
 ```bash
 ./singbox-selfcheck.sh && ./tests/run.sh          # 全绿，含 docs.test.sh 新增项与 config-audit.test.sh 改过的断言

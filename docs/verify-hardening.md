@@ -134,7 +134,7 @@ covers:
 
 ## 待定问题
 
-1. ~~**QUIC 探测全部超时时，「已阻断」与「本机 UDP 出网整体不通」区分不了。**~~
+1. ~~**QUIC 探测全部超时时，「已阻断」与「本机 UDP 出网整体不通」区分不了。**~~ ——已定
    **已解决**（v1.1.0）。按当初设想的方向做了：新增 `_sb_udp_alive` 对照组，
    发一个标准 DNS 查询到公共解析器的 udp/53。判据变成三分支——
    QUIC 通 → 未阻断（`vpbad`）；QUIC 不通但对照通 → 已阻断（`ok`）；
@@ -146,10 +146,16 @@ covers:
    ⚠️ 对照组证明的是「UDP 有来回」，不是「UDP 直出」——配置里的 DNS 劫持规则
    完全可能把这个查询接管掉再代答。用作「本机 UDP 是不是整个废了」的判据够用，别当成别的。
    测试后门 `SB_FAKE_UDP=alive|dead`，与 `SB_FAKE_QUIC` 同理。
-2. **真机验证要你自己跑。** `CLAUDE.md` 写明本机有 live sing-box，`./singbox.sh` 的
-   install/start/restart 等已 deny。下面「验证」的第 2 段必须由人执行。
+2. **真机验证要你自己跑。** ——已定（2026-09-05 lzyMeta 已跑，结果见「验证」第 2 段）
+   `CLAUDE.md` 写明本机有 live sing-box，`./singbox.sh` 的 install/start/restart 等已 deny。下面「验证」的第 2 段必须由人执行。
 
 ## 验证
+
+- AC1 ★ 仅策略档失败（`verify` 退 2）时 `cmd_update` 阶段 3 不回滚，`$BIN` 仍是新版本、`$BIN.prev` 仍在；链路档失败（退 1）时回滚，`$BIN` 换回旧版本。反例：`_sb_verify_rounds` 改回读布尔 → 退 2 也回滚，断言 13 红。
+- AC2 全部桩正常 → 退 0、五步全绿；`SB_FAKE_VERIFY_FAIL=all` → 退 1。反例：`vbad()` 不累计 → 第 2–5 步打了 `✗` 照样退 0（原实现的形状）。
+- AC3 解析降级链：`SB_FAKE_DIG_FAIL=1` 退 0（降到 `host`，不跳过）；`dig`/`host`/`dscacheutil` 全废加 `SB_FAKE_PY_RESOLVE_FAIL=1` 退 2 报「无可用解析手段」；`dig` 返回 `157.240.1.1` 或 `1.2.3.4,157.240.9.9,5.6.7.8` 退 2 报污染，返回 `131.13.5.5` 退 0。反例：污染判据写成子串 `31.13.` → 5c 误报；去掉第 4 级的后门 → 联网机器上断言 4 恒绿。
+- AC4 `SB_FAKE_QUIC=open` 退 2 且第 4 步打 ✗；`blocked` + `SB_FAKE_UDP=alive` → ok；`blocked` + `dead` → 退 2 报「UDP 整体出不去…没有结论」。反例：全部超时直接判「已阻断」→ 7b 假绿。
+- AC5 `SB_FAKE_CN_IP` 等于 SOCKS 出口 → 退 2；`cip.cc` 失败但备胎可用 → 退 0，三家全挂 → 退 2；`SB_FAKE_NO_GW=1` → 退 2；`SB_FAKE_PING_FAIL=1` → 退 2 且确认重试了 3 次。反例：拿不到网关时静默跳过 → 断言 11 红；`ping` 桩不记调用次数 → 「重试 3 次」证不了。
 
 **第 1 段：机械验证（可自动跑，是这份 spec 的验收线）**
 

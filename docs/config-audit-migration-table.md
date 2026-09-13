@@ -259,20 +259,30 @@ singbox config audit [--config <path>] [--apply] [--deep]
 
 ## 待定问题
 
-1. **D 路在 `--deep` 下的沙箱等待时长。** 现有 `SANDBOX_WAIT=40` 是为 `--apply` 第 3 道定的；
-   `--deep` 只要等到 `dns.Router.Start` 打完 WARN，理论上比建链短，但没有可靠的「打完了」信号。
+1. **D 路在 `--deep` 下的沙箱等待时长。** ——已定（裁定见「实现计划」）
+   现有 `SANDBOX_WAIT=40` 是为 `--apply` 第 3 道定的；`--deep` 只要等到 `dns.Router.Start` 打完 WARN，理论上比建链短，但没有可靠的「打完了」信号。
    先沿用 40 秒 —— 责任人：实现者
-2. **`legacy_address_filter_rs` 的 notice 会不会太吵。** 样例配置 `dns.rules[1-2]` 都引用规则集
-   且无 `match_response`，裸审查每次都会打 2 条 notice。若真机上嫌吵，改为只在 `--deep` 无法
+2. **`legacy_address_filter_rs` 的 notice 会不会太吵。** ——已定（裁定见「实现计划」）
+   样例配置 `dns.rules[1-2]` 都引用规则集且无 `match_response`，裸审查每次都会打 2 条 notice。若真机上嫌吵，改为只在 `--deep` 无法
    定性时打 —— 责任人：lzyMeta（真机看过报告后定）
-3. **`snippet` 片段要不要带 `tag`。** `mig-af-N` 的 N 取原规则下标；若配置里已有同名 tag
-   （不太可能但可能），片段就撞了。片段不落地，所以撞了也只是人抄的时候要改 —— 责任人：实现者
-4. **flaky 的根因**：见「其他四件」第 3 条，隔离后复跑 10 次仍红则另立项 —— 责任人：实现者
-5. **`covers` 告警的阈值用 minor 还是完整版本。** 1.14.1 不该告警，1.15.0 该；用 minor 比较
-   即可，但 `ver_gt`（`singbox.sh:827`）是三段比较，要么加个 minor 比较，要么表头写
+3. **`snippet` 片段要不要带 `tag`。** ——已定（裁定见「实现计划」）
+   `mig-af-N` 的 N 取原规则下标；若配置里已有同名 tag（不太可能但可能），片段就撞了。片段不落地，所以撞了也只是人抄的时候要改 —— 责任人：实现者
+4. **flaky 的根因** ——已定（裁定见「实现计划」）
+   见「其他四件」第 3 条，隔离后复跑 10 次仍红则另立项 —— 责任人：实现者
+5. **`covers` 告警的阈值用 minor 还是完整版本。** ——已定（裁定见「实现计划」）
+   1.14.1 不该告警，1.15.0 该；用 minor 比较即可，但 `ver_gt`（`singbox.sh:827`）是三段比较，要么加个 minor 比较，要么表头写
    `covers=1.15.0`（表示「1.15.0 之前」）—— 责任人：实现者
 
 ## 验证
+
+### 验收条件
+
+- AC1 ★ C 路（迁移表）能独立发现：`bad-implicit-http-client.json` 退 2、点名 `route.rule_set[0]`、来源含 `table`；`bad-legacy-address-filter.json` 只点名无 `match_response` 那条；`bad-hysteria-tuning.json` 来源不含 `run`。反例：关掉 C 路 → 断言 1/2/4 红。
+- AC2 四路同中 `bad-store-rdrc.json` 时输出一行，来源 `check+schema+table`（去重）。反例：去重逻辑退化为不去重 → 断言 3 红（同一路径出三行）。
+- AC3 `notice-query-type.json` 退 0 且含 `notice` 行与官方链接；假内核报 `1.15.3` 时打「迁移表只覆盖到 1.14.0」且退出码不变，报 `1.14.9` 时不打。反例：`notice` 参与退出码 → 断言 5 红；`covers` 按三段比较 → `1.14.9` 也打，断言 6 红。
+- AC4 `--deep` 用 `SB_FAKE_RUN_LOG` 喂 `sandbox-run.log` 时 3 条 WARN 全部出现、来源 `run`；`SB_FAKE_UDP=dead` 时打降级 warn 且退出码按 A/B/C。反例：D 路不读日志 → 4 条红。
+- AC5 `--apply` 对 `bad-store-rdrc.json` 的结构 diff 只有 `experimental.cache_file.store_rdrc` 删、`store_dns` 增且值 `true`；`bad-independent-cache.json` 只删 `dns.independent_cache`；`SB_FAKE_MIGRATED` 注入「`store_dns` 值为 false」时第 1 道拒绝。反例：跳过 `rename_if_true` → 断言 8/9/10 红。
+- AC6 表里每条链接的 `migration/#` 锚点都在 `tests/fixtures/migration-anchors.txt` 内；`SB_LOCKDIR` 指向临时目录时两个测试文件背靠背 `-n restart` 不出现「另一个 singbox 实例」。反例：表里加一个清单外的锚点 → 断言 13 红；去掉 `SB_LOCKDIR` 覆盖 → 断言 14 撞锁。
 
 ### 机械验收（离线）
 

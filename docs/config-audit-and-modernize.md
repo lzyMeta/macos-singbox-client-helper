@@ -217,25 +217,32 @@ fixture 命名沿用现有 `bad-<问题名>` / `good-<写法>` 约定（`tests/f
 
 ## 待定问题
 
-1. **schema 子集校验器的 `oneOf` 错误归因。** `$defs/RuleSet` 是三分支 `oneOf`
-   （`inline`/`local`/`remote`，各自 `additionalProperties: false`），带 `download_detour` 的
+1. **schema 子集校验器的 `oneOf` 错误归因。** ——已定（结论见「实现计划」）
+   `$defs/RuleSet` 是三分支 `oneOf`（`inline`/`local`/`remote`，各自 `additionalProperties: false`），带 `download_detour` 的
    条目会同时不匹配三个分支。必须先按 `type` 的 `const` 选定分支再校验，才能报出具体键名。
    没有 discriminator 的分支（如 `$defs/HTTPClientReference` 是 `anyOf: [string, object]`）
    怎么归因，由实现阶段定。**spec 只约束结果**：报告必须点名键路径。—— 责任人：实现者
-2. **`< 1.14.0` 的内核，schema 里是否同样剔除废弃字段？** 未实测（手上只有 1.14.0）。
-   闸门保守取 1.14.0：低于它只用 check 档。要不要为老内核补兼容 —— 责任人：lzyMeta
-3. **`--apply` 的沙箱验收依赖网络。** 沙箱里 `cache.db` 是空的，真配置 21 个 `type: remote`
-   规则集冷启动要现下一遍（`docs/safe-update.md:246` 已记，`SANDBOX_WAIT=40` 就是为此加的）。
+2. **`< 1.14.0` 的内核，schema 里是否同样剔除废弃字段？** ——已定（结论见「实现计划」）
+   未实测（手上只有 1.14.0）。闸门保守取 1.14.0：低于它只用 check 档。要不要为老内核补兼容 —— 责任人：lzyMeta
+3. **`--apply` 的沙箱验收依赖网络。** ——已定（结论见「实现计划」）
+   沙箱里 `cache.db` 是空的，真配置 21 个 `type: remote` 规则集冷启动要现下一遍（`docs/safe-update.md:246` 已记，`SANDBOX_WAIT=40` 就是为此加的）。
    网络不通时第三道验收该算失败、还是跳过并降级为「只过了 1/2/4 三道」—— 责任人：lzyMeta
-4. **`fake-sing-box` 的 `schema` 子命令吐什么。** 吐一份裁剪过的固定 schema fixture
-   （够覆盖 `route.rule_set` 三分支即可），还是吐真内核 schema 的快照（445KB 进仓库）
+4. **`fake-sing-box` 的 `schema` 子命令吐什么。** ——已定（结论见「实现计划」）
+   吐一份裁剪过的固定 schema fixture（够覆盖 `route.rule_set` 三分支即可），还是吐真内核 schema 的快照（445KB 进仓库）
    —— 责任人：实现者
-5. **报告里要不要带 `sing-box schema` 的建议新写法片段。** `$defs/RuleSet` remote 分支
-   给出了 `http_client` 与 `initial_path` 的完整结构，可以直接生成可粘贴的 JSON 片段；
+5. **报告里要不要带 `sing-box schema` 的建议新写法片段。** ——已定（结论见「实现计划」）
+   `$defs/RuleSet` remote 分支给出了 `http_client` 与 `initial_path` 的完整结构，可以直接生成可粘贴的 JSON 片段；
    但对「只报不改」的那些条目，生成片段等于在做第 2、3 条被排除的改写工作
    —— 责任人：lzyMeta
 
 ## 验证
+
+### 验收条件
+
+- AC1 ★ `config audit --config tests/fixtures/bad-download-detour.json` 退出码 2，输出按键路径点名 `route.rule_set[0].download_detour`（不是「不匹配任何分支」），且不误报同名合法字段 `external_ui_download_detour`。反例：把 schema 档整个关掉 → 对脏配置退 0；把键路径比对换成子串 `grep -c download_detour` → 多出一行 `external_ui_download_detour` 的误报。
+- AC2 `good-http-client.json` 退 0 且无任何发现；`bad-removed-field.json` 退 1。反例：「起不来」与「将来会坏」两档共用一个退出码 → 后者退 2。
+- AC3 `--apply` 对 `bad-download-detour.json` 的结构 diff 只落在 `route.rule_set[*]` 的 `download_detour` → `http_client.detour`，值逐字相同、`update_interval` 等同级字段一字不变，改写后重跑发现层命中数为 0。反例：用 `SB_FAKE_MIGRATED` 注入「`route.rules[3].outbound` 被额外改动」或「`http_client` 为空对象」→ 第 1 道白名单 diff 必须拒绝；把第 1 道或第 4 道改成永远通过 → 断言 6/7 与「① 漏改」红。
+- AC4 假内核报 `1.13.14` 时 `--apply` 直接失败并说明 `http_client` 需要 ≥ 1.14.0。反例：版本闸门只比 major → `1.13.14` 被放行。
 
 ### 机械验收（离线，进 CI 口径）
 
