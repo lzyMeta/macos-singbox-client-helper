@@ -39,7 +39,8 @@
       "extra": [
         "README.md",
         "CLAUDE.md",
-        "AGENTS.md"
+        "AGENTS.md",
+        "CONTRIBUTING.md"
       ]
     },
     "site": {
