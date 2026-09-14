@@ -16,7 +16,7 @@
 #   logs       [n|-f|size|truncate] 看日志、看体积、原地回收空间
 #   debug      debug 前台跑，看分流命中
 #   edit       改配置（校验 + 备份 + 重启）
-#   config     配置子命令：show / backup / list / diff / restore
+#   config     配置子命令：show / backup / list / diff / restore / export / audit
 #   rules      验证规则集 URL
 #   update     升级脚本与内核（先脚本，再沙箱验证 → 升级 → 验收，任一步失败自动回滚）
 #   rollback   换回上一个内核与上一版 singbox 命令（$BIN.prev / $LAUNCHER.prev）并重新验收
@@ -3320,6 +3320,29 @@ PY
   return 0
 }
 
+# config export 的进程陈旧性提醒：sing-box 在跑、且它的启动时刻早于 $CFG 的 mtime，
+# 说明磁盘上这份还没被进程吃到。macOS 的 ps 没有 etimes，只能拿 etime（[[dd-]hh:]mm:ss）
+# 反推启动时间；解析不出来就闭嘴——这是提醒不是判决。
+_cfg_export_stale_warn() {
+  running || return 0
+  local pid et; pid=$(pgrep -x sing-box | head -1); [ -n "$pid" ] || return 0
+  et=$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' '); [ -n "$et" ] || return 0
+  local days=0 hms secs=0 f
+  case "$et" in *-*) days="${et%%-*}"; hms="${et#*-}" ;; *) hms="$et" ;; esac
+  for f in $(printf '%s' "$hms" | tr ':' ' '); do
+    case "$f" in ''|*[!0-9]*) return 0 ;; esac
+    secs=$((secs * 60 + 10#$f))
+  done
+  case "$days" in ''|*[!0-9]*) return 0 ;; esac
+  secs=$((secs + days * 86400))
+  local started mtime
+  started=$(( $(date +%s) - secs ))
+  mtime=$(stat -f %m "$CFG" 2>/dev/null) || return 0
+  if [ "$started" -lt "$mtime" ]; then
+    warn "磁盘配置比运行中的进程新（进程起于 $(date -r "$started" '+%m-%d %H:%M:%S')，配置改于 $(date -r "$mtime" '+%m-%d %H:%M:%S')），导出的是磁盘版；要导出进程正在用的那版，先 restart"
+  fi
+}
+
 cmd_config() {
   require_installed
   case "${1:-show}" in
@@ -3345,6 +3368,47 @@ cmd_config() {
       sudo cp "$b" "$CFG" || die "恢复失败，$CFG 未改动"
       sudo chown root:wheel "$CFG"; sudo chmod 644 "$CFG"
       ok "已恢复"; cmd_restart ;;
+    export)
+      shift
+      # 把 $CFG 逐字节复制到自定义路径。读 $CFG 不需要 root（0644），所以不 need_root、
+      # 不 acquire_lock。导出物带订阅地址与节点凭据 → 0600、owner 是调用者；目标已存在
+      # 只有 --force 才覆盖；目标是目录或父目录不存在直接拒绝，不学 cp 往目录里补文件名。
+      local e_dst="" e_force=0
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --force) e_force=1; shift ;;
+          -*) die "config export: 未知参数 $1（--force）" ;;
+          *) [ -z "$e_dst" ] || die "config export: 只接受一个路径（多给了 $1）"
+             e_dst="$1"; shift ;;
+        esac
+      done
+      [ -n "$e_dst" ] || die "用法：$(basename "$0") config export <path> [--force]"
+      [ -d "$e_dst" ] && die "目标是目录：$e_dst —— 请写全文件路径，如 ${e_dst%/}/config.json"
+      local e_dir; e_dir=$(dirname "$e_dst")
+      [ -d "$e_dir" ] || die "父目录不存在：$e_dir"
+      if [ -e "$e_dst" ] && [ "$e_force" != 1 ]; then
+        die "目标已存在：$e_dst —— 要覆盖请加 --force"
+      fi
+      [ -f "$CFG" ] || die "找不到配置：$CFG"
+      # 「当前生效」以磁盘 $CFG 为准——launchd 只会从它起进程。但 edit / audit --apply /
+      # restore 改的是磁盘，进程要 restart 才吃到；进程启动时刻早于 $CFG 的 mtime 就提醒一句。
+      # 只警告不阻断：「先导出再重启」是合理顺序。
+      _cfg_export_stale_warn
+      if [ "$DRY" = 1 ]; then
+        dim "[dry-run] cp $CFG → ${e_dst}（0600，owner $(id -un)$([ "$e_force" = 1 ] && printf '，覆盖已有文件')）"
+        return 0
+      fi
+      # 先写同目录临时名再 mv：cmp 不等或中途失败时删的是临时文件，--force 场景下用户的
+      # 旧文件完好。umask 077 让临时文件从出生起就不是世界可读。
+      local e_tmp="$e_dir/.$(basename "$e_dst").tmp.$$"
+      ( umask 077; cp "$CFG" "$e_tmp" ) || { rm -f "$e_tmp"; die "复制失败：$CFG → $e_tmp"; }
+      # 走 sudo 时 cp 出来的是 root 的文件，归还给真正的调用者（SUDO_UID/SUDO_GID 是 sudo 标准导出）。
+      chown "${SUDO_UID:-$(id -u)}:${SUDO_GID:-$(id -g)}" "$e_tmp" || { rm -f "$e_tmp"; die "无法把导出物归属给调用者"; }
+      chmod 600 "$e_tmp" || { rm -f "$e_tmp"; die "无法把导出物收成 0600"; }
+      cmp -s "$CFG" "$e_tmp" || { rm -f "$e_tmp"; die "导出物与 $CFG 不一致，已删除半截文件"; }
+      mv -f "$e_tmp" "$e_dst" || { rm -f "$e_tmp"; die "无法写入 $e_dst"; }
+      ok "已导出：${e_dst}（0600）"
+      return 0 ;;
     audit)
       shift
       # 参数解析。⚠️ 每个 shift 2 之前都要确认 $2 存在：shift 2 在参数不够时
@@ -3384,7 +3448,7 @@ cmd_config() {
       fi
       _cfg_audit_report "$a_cfg" "$runlog" "${complete:-0}"
       return $? ;;
-    *) die "config: 未知子命令 $1（show|backup|list|diff|restore|audit）" ;;
+    *) die "config: 未知子命令 $1（show|backup|list|diff|restore|export|audit）" ;;
   esac
 }
 
@@ -4343,6 +4407,8 @@ singbox.sh v$VERSION —— sing-box on macOS 全生命周期管理
                       --editor 会被记住，后续 edit 自动使用
                       --once 只用一次不保存；--show-editor 查看；--reset-editor 清除
   config <sub>        show | backup | list | diff [备份] | restore [备份]
+                      export <path> [--force]
+                      把生效配置逐字节导出到自定义路径（0600；已存在要 --force 才覆盖）
                       audit [--config <path>] [--apply] [--deep]
                       配置的废弃与合法性审查（--deep 起沙箱收内核告警，要网络）
 

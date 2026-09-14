@@ -156,6 +156,7 @@ cp config/config.example.json config.json && $EDITOR config.json   # 换掉 7 �
 | [docs/config-audit-and-modernize.md](docs/config-audit-and-modernize.md) | `config audit` 第一轮：两路发现层 + `--apply` |
 | [docs/config-audit-migration-table.md](docs/config-audit-migration-table.md) | `config audit` 第二轮：四路发现层、迁移表、三条改写规则 |
 | [docs/config-audit-findings-guide.md](docs/config-audit-findings-guide.md) | `config audit` 第三轮（规格）：每条「怎么办」的解读文档、`--deep` 撤条说明 |
+| [docs/config-export.md](docs/config-export.md) | `config export`（规格）：把生效配置导出到自定义路径，防覆盖、0600、进程陈旧性警告 |
 
 ---
 
@@ -180,6 +181,7 @@ cp config/config.example.json config.json && $EDITOR config.json   # 换掉 7 �
 │   ├── platform.test.sh       平台与 CPU 架构判定（Rosetta）
 │   ├── verify.test.sh         verify 的两档退出码
 │   ├── config-audit.test.sh   config audit 的发现层、迁移表与 --apply
+│   ├── config-export.test.sh  config export 的防覆盖、0600 与进程陈旧性警告
 │   ├── doctor.test.sh         doctor / status 对 TUN 路由的判读
 │   ├── template.test.sh       config.example.json 过 audit、且与 live 逐键一致
 │   ├── docs.test.sh           手册对着源头核对（子命令、文件清单、目录、配置全文…）
@@ -204,8 +206,9 @@ cp config/config.example.json config.json && $EDITOR config.json   # 换掉 7 �
     │                          设计记录：config audit 第一轮
     ├── config-audit-migration-table.md
     │                          设计记录：config audit 第二轮（迁移表）
-    └── config-audit-findings-guide.md
-                               规格：config audit 第三轮（结论解读文档）
+    ├── config-audit-findings-guide.md
+    │                          规格：config audit 第三轮（结论解读文档）
+    └── config-export.md       规格：config export 导出生效配置
 ```
 
 `.gitignore` 已排除 `config.json`、`*.bak`、`ui/`、`cache.db` 等本地产物——**填好参数的配置不要提交**。

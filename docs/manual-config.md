@@ -35,7 +35,13 @@ covers:
    singbox config list                 # 带时间戳，自动保留最近 10 份
    singbox config diff [备份路径]       # 默认与最近一次比
    singbox config restore [备份路径]    # 默认恢复最近一次
+   singbox config export <path> [--force]   # 逐字节导出生效配置到自定义路径
    ```
+
+   `export` 不要 sudo、不解析不脱敏，导出物是 **0600** 且归调用者——它带订阅地址与节点凭据，
+   要分享请先自己脱敏再 `chmod`。目标已存在只有 `--force` 才覆盖；目标是目录或父目录不存在直接拒绝。
+   若 sing-box 正在跑、且磁盘配置比进程启动时刻新（`edit` / `audit --apply` 之后没 `restart`），
+   会 warn 一句「磁盘配置比运行中的进程新」但照常导出——导出的永远是磁盘上那份。
 
 3. 审查废弃字段
 

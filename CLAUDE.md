@@ -9,11 +9,12 @@
 ./singbox-selfcheck.sh && ./tests/run.sh
 ```
 
-前半段是 `singbox.sh` 的静态自检（13 项），后半段是 `tests/` 下的 <!-- sdlc-doc:n tests/*.test.sh -->12<!-- sdlc-doc:end --> 个测试文件：
+前半段是 `singbox.sh` 的静态自检（13 项），后半段是 `tests/` 下的 <!-- sdlc-doc:n tests/*.test.sh -->13<!-- sdlc-doc:end --> 个测试文件：
 `cli`（参数解析）、`selfcheck`（自检项本身）、`install`（装 `singbox` 命令）、
 `selfupdate`（`update` 阶段 S 的脚本自更新）、`update`（内核升级状态机与 `rollback`）、
 `logs`（日志体积与截断）、`platform`（架构判定）、`verify`（两档退出码）、
 `config-audit`（四路发现层、迁移表、`--apply` 三条规则与四道验收）、
+`config-export`（防覆盖、0600、进程陈旧性 warn：假 `ps -o etime=` 桩在测试文件里自造）、
 `doctor`（TUN 路由判读：`_tun_route_state` 三处共用）、
 `template`（`config/config.example.json` 过 audit、且与 live 逐键全等——live 读得到才比，只打印路径不打印值；
 网卡名、tun 地址、`external_ui` 三条路径允许值不同，模板留通用值）、

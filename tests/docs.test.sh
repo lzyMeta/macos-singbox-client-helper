@@ -43,18 +43,27 @@ done
 if [ -z "$miss" ]; then ok "$(printf '%s\n' "$cmds" | wc -l | tr -d ' ') 个子命令在 README 命令表、内置 help、操作手册里都有"
 else ng "有子命令没写进手册：$miss"; fi
 
-#-- 2. config audit 的旗标：解析器认的每一个，内置 help 与 manual-config 都要列 ---------------
-flags=$(grep -o 'config audit: 未知参数 \$1（[^）]*）' singbox.sh | grep -o -- '--[a-z]*' | sort -u)
-[ -n "$flags" ] || ng "从 config audit 的参数解析里抓不到旗标（die 文案变了？）"
-audit_help=$(printf '%s\n' "$help_txt" | grep 'audit \[')
+#-- 2. config audit / export 的旗标：解析器认的每一个，内置 help 与 manual-config 都要列 ---------
+# 旗标从 die 文案里抓：`config <sub>: 未知参数 $1（--a | --b）`——解析器认什么，文案就得列什么。
 audit_usage=$(cat "$CFGMAN")
-miss=""
-for f in $flags; do
-  printf '%s\n' "$audit_help" | grep -q -- "$f" || miss="$miss help:$f"
-  printf '%s\n' "$audit_usage" | grep -q -- "$f" || miss="$miss usage:$f"
+for sub in audit export; do
+  flags=$(grep -o "config $sub: 未知参数 \$1（[^）]*）" singbox.sh | grep -o -- '--[a-z]*' | sort -u)
+  [ -n "$flags" ] || { ng "从 config $sub 的参数解析里抓不到旗标（die 文案变了？）"; continue; }
+  sub_help=$(printf '%s\n' "$help_txt" | grep -- " $sub ")
+  miss=""
+  for f in $flags; do
+    printf '%s\n' "$sub_help" | grep -q -- "$f" || miss="$miss help:$f"
+    printf '%s\n' "$audit_usage" | grep -q -- "$f" || miss="$miss usage:$f"
+  done
+  if [ -z "$miss" ]; then ok "config $sub 的旗标（$(printf '%s' "$flags" | tr '\n' ' ')）help 与 manual-config 都列全了"
+  else ng "config $sub 有旗标没写进手册：$miss"; fi
 done
-if [ -z "$miss" ]; then ok "config audit 的旗标（$(printf '%s' "$flags" | tr '\n' ' ')）help 与 manual-config 都列全了"
-else ng "config audit 有旗标没写进手册：$miss"; fi
+# config export 本身：help 的 `config <sub>` 段与 manual-config 都要有它（AC7）。
+miss=""
+printf '%s\n' "$help_txt" | grep -q 'export <path>' || miss="$miss help"
+grep -q 'singbox config export' "$CFGMAN" || miss="$miss manual"
+if [ -z "$miss" ]; then ok "config export 在内置 help 与 manual-config 里都有"
+else ng "config export 没写进手册：$miss"; fi
 
 #-- 3. README 仓库结构：tests/*.test.sh 与 docs/*.md 一个不多、一个不少 --------------------
 tree=$(sed -n '/^## 5\. 仓库结构/,/^## 6\./p' "$README" | sed -n '/^```/,/^```/p')
