@@ -1,3 +1,4 @@
 docs/refs/** -text
 docs/refs/**/symbols.tsv merge=union
 docs/refs/**/queries.tsv merge=union
+docs/site/index.html -diff
