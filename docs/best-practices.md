@@ -1589,6 +1589,7 @@ chmod +x ~/.wakeup
 | 某类流量莫名走了兜底 | 该规则集下载失败，静默不命中 | 按 2.7 验证 URL |
 | 国内网站很慢 | 第 14/15 条顺序的代价，或 DNS 分流不一致 | 见 2.6 |
 | 睡眠唤醒后断网 | 路由丢失 | `sudo launchctl kickstart -k system/sing-box` |
+| 换了内核二进制后起不来，`sing-box.err` 一行都没有 | macOS 26+ 的 BTM 把 ad-hoc 签名的 daemon 按 cdhash 钉进启动约束，`kickstart -k` 不重新登记 → `Launch Constraint Violation`（见 `log show --predicate 'process == "launchd"'` 与 `/Library/Logs/DiagnosticReports/sing-box-*.ips`） | `sudo launchctl bootout system/sing-box && sudo launchctl bootstrap system /Library/LaunchDaemons/sing-box.plist`；`singbox update` / `rollback` 已改走这条 |
 
 ### 7.2 端口被占用
 

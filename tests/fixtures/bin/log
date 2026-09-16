@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# 假 `log`（macOS 统一日志）。真机上 `log show --last 3m` 要跑好几秒，测试里压掉。
+#
+#   SB_FAKE_LAUNCHD_REASON=1   `log show` 吐出 2026-09-15 真机上的那两行 launchd 记录：
+#                              新内核被启动约束杀掉，服务被移除。不设则什么都不吐。
+case "${1:-}" in
+  show)
+    [ "${SB_FAKE_LAUNCHD_REASON:-0}" = 1 ] || exit 0
+    cat <<'L'
+2026-09-15 18:02:55.246 Df launchd[1:38ae53] [system/sing-box [25246]:] xpcproxy exited due to OS_REASON_CODESIGNING | Launch Constraint Violation, error info: c[5]p[1]m[1]e[0], (Constraint not matched) launch type 0, failure proc [vc: 10]: /usr/local/bin/sing-box
+2026-09-15 18:02:55.246 Df launchd[1:38ae53] [system/sing-box [25246]:] removing service since it exited with consistent failure - OS_REASON_CODESIGNING | Launch Constraint Violation, error info: c[5]p[1]m[1]e[0], (Constraint not matched) launch type 0, failure proc [vc: 10]: /usr/local/bin/sing-box
+L
+    ;;
+esac
+exit 0

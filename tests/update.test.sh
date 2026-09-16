@@ -66,6 +66,8 @@ setup() {
   ROOT=$(mktemp -d)
   LOG="$ROOT/out.log"
   export SB_FAKE_STATE="$ROOT/state";  mkdir -p "$SB_FAKE_STATE"
+  # 起不来的分支会 tail $ERRFILE：不指到临时目录就会把这台机器真机的 /var/log/sing-box.err 倒进测试输出
+  export SB_LOGDIR="$ROOT/log";        mkdir -p "$SB_LOGDIR"
   export XDG_CONFIG_HOME="$ROOT/xdg";  mkdir -p "$XDG_CONFIG_HOME"
   mkdir -p "$ROOT/prefix/bin" "$ROOT/prefix/etc/sing-box"
 
@@ -116,6 +118,9 @@ time.sleep(600)' "$SB_FAKE_LIVE_PORT" "$SB_FAKE_LIVE_CLASH_PORT" >/dev/null 2>&1
 JSON
 
   mk_bin "$SB_FAKE_LIVE_BIN" "$OLD"
+  # BTM 在开机 bootstrap 时钉住的就是这一份旧内核（见假 launchctl 的 SB_FAKE_BTM_PIN）
+  shasum "$SB_FAKE_LIVE_BIN" | awk '{print $1}' > "$SB_FAKE_STATE/btm_cdhash"
+  : > "$SB_FAKE_STATE/btm_events"
 
   # 打一个和 GitHub 上同构的 tar.gz：sing-box-<版本>-darwin-<arch>/sing-box
   local arch; arch=$([ "$(uname -m)" = arm64 ] && echo arm64 || echo amd64)
@@ -132,7 +137,7 @@ JSON
   # 不钉的话这里照样会往公网发 UDP，离线跑测试就是假红。
   export SB_FAKE_UDP=alive
 
-  unset SB_FAKE_BAD_SHA SB_FAKE_NO_DIGEST
+  unset SB_FAKE_BAD_SHA SB_FAKE_NO_DIGEST SB_FAKE_BTM_PIN SB_FAKE_LAUNCHD_REASON SB_DIAGDIR
   unset SB_FAKE_CHECK_FAIL SB_FAKE_RUN_FAIL SB_FAKE_START_FAIL \
         SB_FAKE_SANDBOX_SOCKS_FAIL SB_FAKE_VERIFY_FAIL SB_FAKE_NO_TUN \
         SB_FAKE_PROBE_FAIL SB_FAKE_DEPRECATED SB_FAKE_TUN_HOST_ONLY SB_FAKE_TUN_UPPER_ONLY \
@@ -428,6 +433,54 @@ if grep -q '废弃/未知字段' "$LOG"; then
   ok "阶段 3 之后跑了配置审查并报出废弃项"
 else
   ng "阶段 3 之后没跑配置审查 —— 挂载点没生效"
+fi
+
+#-- 22. macOS 26+ BTM 启动约束：换了二进制之后 kickstart -k 必死，必须重新登记 ----
+# 2026-09-15 macOS 27.0 真机：阶段 2 装入 1.14.1 后 `launchctl kickstart -k`，新进程
+# 4ms 内被 `OS_REASON_CODESIGNING | Launch Constraint Violation` 杀掉——BTM 在
+# bootstrap 时把 ad-hoc 二进制的 cdhash 钉进了约束，原地换文件不重新登记就对不上。
+# sing-box 自己一行日志都没有，脚本只 tail 内核日志于是什么都说不出。回滚那次
+# 恰好因为 launchd 已把服务移除而走了 bootstrap，才起来的。
+# 期望：换完内核走 bootout + bootstrap（重新登记），update 成功；且没有再用 kickstart。
+setup
+SB_FAKE_BTM_PIN=1 sb update
+if [ "$CODE" = 0 ] && [ "$(bin_version "$(BIN)")" = "$NEW" ] \
+   && [ "$(bin_version "$(BIN).prev")" = "$OLD" ] \
+   && ! grep -q 'constraint-violation' "$SB_FAKE_STATE/btm_events" \
+   && grep -q "^bootstrap:$NEW" "$SB_FAKE_STATE/btm_events"; then
+  ok "BTM 钉哈希：update 换内核后走 bootstrap 重新登记，退出 0 且新内核在位"
+else
+  ng "BTM 钉哈希：期望 0/${NEW} 且经 bootstrap 起来（退出 ${CODE}，实际 $(bin_version "$(BIN)")）" \
+     "launchctl 调用序列：$(tr '\n' ' ' < "$SB_FAKE_STATE/btm_events")"
+fi
+
+#-- 23. 同一约束下 rollback：换回 .prev 也是换二进制，同样要重新登记 --------
+if [ "$CODE" = 0 ]; then
+  SB_FAKE_BTM_PIN=1 sb rollback
+  if [ "$CODE" = 0 ] && [ "$(bin_version "$(BIN)")" = "$OLD" ] \
+     && ! grep -q 'constraint-violation' "$SB_FAKE_STATE/btm_events"; then
+    ok "BTM 钉哈希：rollback 换回旧内核也经重新登记起来，退出 0"
+  else
+    ng "BTM 钉哈希：rollback 期望 0/${OLD}（退出 ${CODE}，实际 $(bin_version "$(BIN)")）" \
+       "launchctl 调用序列：$(tr '\n' ' ' < "$SB_FAKE_STATE/btm_events")"
+  fi
+else
+  ng "BTM 钉哈希：rollback 用例的前置 update 就没成功，跳过"
+fi
+
+#-- 24. 起不来时要去问 launchd，不能只 tail 内核日志 ------------------------
+# 被启动约束杀掉的进程没活到 main()，内核日志是空的；真正的原因在统一日志的
+# launchd 记录和 /Library/Logs/DiagnosticReports/sing-box-*.ips 里。
+setup
+diag="$ROOT/diag"; mkdir -p "$diag"
+cp tests/fixtures/sing-box-launch-constraint.ips "$diag/sing-box-2026-09-15-180255.ips"
+SB_FAKE_START_FAIL="$NEW" SB_FAKE_LAUNCHD_REASON=1 SB_DIAGDIR="$diag" sb update
+if [ "$CODE" != 0 ] && [ "$(bin_version "$(BIN)")" = "$OLD" ] \
+   && grep -q 'Launch Constraint Violation' "$LOG" \
+   && grep -q 'sing-box-2026-09-15-180255.ips' "$LOG"; then
+  ok "起不来：终端上有 launchd 的 Launch Constraint Violation 原因，并点名了 .ips 报告"
+else
+  ng "起不来：期望回滚且日志含 launchd 原因与 .ips 路径（退出 ${CODE}）"
 fi
 
 echo

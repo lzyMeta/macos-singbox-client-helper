@@ -68,6 +68,9 @@ LOGFILE="$LOGDIR/sing-box.log"
 ERRFILE="$LOGDIR/sing-box.err"
 # SB_LOCKDIR：测试用它把锁指到临时目录，免得与 live 的 singbox 命令、测试之间共用一把
 LOCKDIR="${SB_LOCKDIR:-/tmp/.singbox-sh.lock}"
+# SB_DIAGDIR：macOS 崩溃报告目录。进程没活到 main() 就被杀（启动约束、签名）时，内核日志
+# 是空的，只有这里的 sing-box-*.ips 和统一日志里的 launchd 记录说得出原因。测试用它指到样本。
+DIAGDIR="${SB_DIAGDIR:-/Library/Logs/DiagnosticReports}"
 PREFS_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/singbox"
 PREFS="$PREFS_DIR/prefs"
 DNS_BACKUP="$PREFS_DIR/dns-backup"
@@ -3481,11 +3484,69 @@ cmd_start() {
         fi
       fi
     else
-      bad "启动后进程未出现"; sudo tail -20 "$ERRFILE" 2>/dev/null | sed 's/^/      /'; return 1
+      bad "启动后进程未出现"; _launchd_postmortem; return 1
     fi
   else
     bad "加载失败"; info "跑 $(basename "$0") doctor"; return 1
   fi
+}
+
+# 服务起不来时的验尸。先 tail 内核日志，但**不能只看它**：2026-09-15 macOS 27.0 上
+# 新内核被 launchd 的启动约束在 4ms 内 SIGKILL，sing-box 一行都没来得及写——原因只在
+# 统一日志的 launchd 记录和 $DIAGDIR/sing-box-*.ips 里，而脚本当时只 tail 了内核日志，
+# 终端上除了一句「重启失败」什么都没有。
+_launchd_postmortem() {
+  local out ips
+  sudo tail -20 "$ERRFILE" 2>/dev/null | sed 's/^/      /'
+  out=$(log show --last 3m --style compact \
+          --predicate '(process == "launchd" OR process == "xpcproxy") AND eventMessage CONTAINS "sing-box"' \
+          2>/dev/null | grep -v '^Timestamp' | grep -i 'exited\|spawn\|removing\|constraint\|kill' | tail -6)
+  if [ -n "$out" ]; then
+    info "launchd 最近 3 分钟对 sing-box 的记录："
+    printf '%s\n' "$out" | cut -c1-220 | sed 's/^/      /' >&2
+  fi
+  # 崩溃报告：只看 10 分钟内新生成的，旧的是别的事故
+  ips=$(find "$DIAGDIR" -maxdepth 1 -name 'sing-box-*.ips' -mmin -10 2>/dev/null | sort | tail -1)
+  if [ -n "$ips" ]; then
+    info "崩溃报告：$ips"
+    python3 - "$ips" <<'PY' 2>/dev/null | sed 's/^/      /' >&2
+import json, sys
+body = json.loads(open(sys.argv[1]).read().split("\n", 1)[1])
+t = body.get("termination", {}); e = body.get("exception", {})
+print("termination:", t.get("namespace", "?"), "/", t.get("indicator", "?"))
+print("signal:     ", e.get("signal", "?"))
+print("signing:    ", body.get("codeSigningID", "?"), "team:", body.get("codeSigningTeamID") or "(无)")
+PY
+  fi
+  if printf '%s' "$out" | grep -q 'Launch Constraint Violation' \
+     || { [ -n "$ips" ] && grep -q 'Launch Constraint Violation' "$ips" 2>/dev/null; }; then
+    warn "被 launchd 的启动约束（Launch Constraint）杀掉：二进制换了但服务没重新登记"
+    info "macOS 26+ 把 ad-hoc 签名的 daemon 按内容钉在约束里，原地换文件后 kickstart 必死，要 bootout + bootstrap"
+  fi
+  return 0
+}
+
+# 换过 $BIN 之后的重启。kickstart -k 在这里**不能用**：macOS 26+ 的 BTM 在 bootstrap 时把
+# ad-hoc 签名二进制（sing-box 发布包是 linker-signed、无 Team ID，securityd 提不出身份，
+# 只剩 cdhash 可钉）的哈希写进启动约束，kickstart 不重新登记，新二进制一起就
+# Launch Constraint Violation。bootout + bootstrap 会让 BTM invalidateLaunchItem 再登记一次。
+# 2026-09-15 macOS 27.0 上 1.14.0 → 1.14.1 就是这么失败的；回滚那次能起来纯属侥幸——
+# launchd 已因 consistent failure 把服务移除，daemon_loaded 为假才走到了 bootstrap。
+# 只在换内核（update / rollback）时用；改配置的重启仍走 cmd_restart 的 kickstart。
+_sb_restart_reload() {
+  require_installed; need_root; acquire_lock
+  [ "$DRY" = 1 ] && { dim "[dry-run] launchctl bootout + bootstrap ${LABEL}（重新登记，换过二进制必须走这条）"; return 0; }
+  info "换过内核，重新登记服务（bootout + bootstrap）而不是 kickstart"
+  sudo launchctl bootout "$LABEL" 2>/dev/null
+  # 给旧进程收 TUN、退路由的时间。cmd_start 看到 running 会直接说「已在运行」然后返回 0，
+  # 那样就是旧内核继续跑、脚本却报升级成功。
+  local i=0
+  while running && [ "$i" -lt 10 ]; do sleep 1; i=$((i + 1)); done
+  if running; then
+    bad "bootout 之后旧进程仍在（可能是 debug 或手动前台实例）"
+    return 1
+  fi
+  cmd_start
 }
 
 cmd_stop() {
@@ -3552,7 +3613,7 @@ cmd_restart() {
   if daemon_loaded; then
     if sudo launchctl kickstart -k "$LABEL" 2>/dev/null; then
       sleep 3
-      running && ok "已重启" || { bad "重启后未运行"; sudo tail -20 "$ERRFILE" 2>/dev/null | sed 's/^/      /'; return 1; }
+      running && ok "已重启" || { bad "重启后未运行"; _launchd_postmortem; return 1; }
     else
       warn "kickstart 失败，改为重新加载"
       # --keep-dns：这是一次「重启」，不是「停服」。不加的话 cmd_stop 会走到
@@ -3924,7 +3985,7 @@ _sb_rollback_to_prev() {
   [ -f "$BIN.prev" ] || { bad "没有 ${BIN}.prev，无法回滚 —— 需要手工重装内核"; return 1; }
   sudo mv "$BIN.prev" "$BIN" || { bad "回滚失败：换不回 ${BIN}"; return 1; }
   ok "已换回 ${want:-旧版本}"
-  cmd_restart || { bad "回滚后重启失败 —— 跑 $(basename "$0") doctor"; return 1; }
+  _sb_restart_reload || { bad "回滚后重启失败 —— 跑 $(basename "$0") doctor"; return 1; }
   _sb_health || warn "回滚后健康检查未全过 —— 跑 $(basename "$0") doctor"
   return 0
 }
@@ -3969,7 +4030,7 @@ cmd_update() {
   if [ "$DRY" = 1 ]; then
     dim "[dry-run] 下载 sing-box-${new}-darwin-${arch}.tar.gz"
     dim "[dry-run] 阶段 1 沙箱：临时前缀实跑新内核 + check -c 当前配置 + socks 建链（现网不受影响）"
-    dim "[dry-run] 阶段 2 升级：$BIN → ${BIN}.prev，装入 v${new}，重启并做健康检查"
+    dim "[dry-run] 阶段 2 升级：$BIN → ${BIN}.prev，装入 v${new}，bootout + bootstrap 重新登记并做健康检查"
     dim "[dry-run] 阶段 3 验收：跑 verify，链路档失败才回滚，策略档失败放行"
     info "以上均未执行。真正升级去掉 -n。"
     return 0
@@ -4043,9 +4104,10 @@ cmd_update() {
     return 1
   fi
 
-  # ⚠️ cmd_restart 的返回值必须看。之前这里是裸调用，「起不来」这条路径
+  # ⚠️ 重启的返回值必须看。之前这里是裸调用，「起不来」这条路径
   # 从来没有被走到过，而那恰恰是最需要回滚的时刻。
-  if ! cmd_restart; then
+  # 走 _sb_restart_reload 不走 cmd_restart：换了二进制，kickstart 在 macOS 26+ 上必死。
+  if ! _sb_restart_reload; then
     bad "新内核重启失败"
     _sb_rollback_to_prev "$cur"
     return 1
@@ -4099,7 +4161,7 @@ cmd_rollback() {
   ask "确认回滚？" y || return 0
 
   if [ "$DRY" = 1 ]; then
-    dim "[dry-run] mv ${BIN}.prev → ${BIN}，重启，再跑一遍 verify 验收"
+    dim "[dry-run] mv ${BIN}.prev → ${BIN}，bootout + bootstrap 重新登记，再跑一遍 verify 验收"
     dim "[dry-run] 有 ${LAUNCHER}.prev 的话，singbox 命令一并退回上一版"
     info "以上均未执行。"
     return 0
@@ -4121,7 +4183,7 @@ cmd_rollback() {
     info "没有 ${LAUNCHER}.prev —— singbox 命令没有退路，本次只退了内核"
   fi
 
-  cmd_restart || die "回滚后重启失败 —— 跑 $(basename "$0") doctor"
+  _sb_restart_reload || die "回滚后重启失败 —— 跑 $(basename "$0") doctor"
   _sb_health || warn "健康检查未全过"
 
   step "验收"

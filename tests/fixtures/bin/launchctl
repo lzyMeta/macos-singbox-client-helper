@@ -5,10 +5,17 @@
 #
 #   SB_FAKE_START_FAIL=<版本>   该版本装上去之后服务不出现
 #   SB_FAKE_DAEMON_LOADED=0     模拟 daemon 未加载
+#   SB_FAKE_BTM_PIN=1           模拟 macOS 26+ 的 BTM 启动约束：bootstrap 时把现网
+#                               二进制的哈希钉进约束，之后 kickstart 起来的二进制
+#                               哈希对不上就在 4ms 内被 SIGKILL——kickstart 本身照样
+#                               返回 0，进程不出现，launchd 随即把服务整个移除
+#                               （之后 print 报未加载）。2026-09-15 在 macOS 27.0 上
+#                               的真实形状：sing-box 自己一行日志都没有。
 #
 S="${SB_FAKE_STATE:?SB_FAKE_STATE 未设置}"
 
 _live_version() { "${SB_FAKE_LIVE_BIN:-/nonexistent}" version 2>/dev/null | head -1 | awk '{print $3}'; }
+_live_sig()     { shasum "${SB_FAKE_LIVE_BIN:-/nonexistent}" 2>/dev/null | awk '{print $1}'; }
 
 _start() {
   if [ "$(_live_version)" = "${SB_FAKE_START_FAIL:-}" ]; then
@@ -42,11 +49,28 @@ _stop() {
   return 0
 }
 
+# BTM 钉住的哈希。文件不存在 = 从没 bootstrap 过 = 没有匹配的约束。
+_pinned() { cat "$S/btm_cdhash" 2>/dev/null; }
+
 case "${1:-}" in
-  print)      [ "${SB_FAKE_DAEMON_LOADED:-1}" = 0 ] && exit 1; exit 0 ;;
-  kickstart)  _start ;;
-  bootstrap)  _start ;;
-  bootout)    _stop ;;
+  print)
+    [ "${SB_FAKE_DAEMON_LOADED:-1}" = 0 ] && exit 1
+    [ "$(cat "$S/loaded" 2>/dev/null || echo 1)" = 0 ] && exit 1
+    exit 0 ;;
+  kickstart)
+    if [ "${SB_FAKE_BTM_PIN:-0}" = 1 ] && [ "$(_live_sig)" != "$(_pinned)" ]; then
+      echo "kickstart:constraint-violation:$(_live_version)" >> "$S/btm_events"
+      _stop; echo 0 > "$S/loaded"; exit 0
+    fi
+    echo "kickstart:$(_live_version)" >> "$S/btm_events"
+    _start ;;
+  bootstrap)
+    echo "bootstrap:$(_live_version)" >> "$S/btm_events"
+    _live_sig > "$S/btm_cdhash"; echo 1 > "$S/loaded"
+    _start ;;
+  bootout)
+    echo "bootout" >> "$S/btm_events"
+    echo 0 > "$S/loaded"; _stop ;;
   enable|disable) exit 0 ;;
   *) exit 0 ;;
 esac
