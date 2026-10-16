@@ -2085,10 +2085,12 @@ PY
   _rules_stop || { bad "旧缓存还在 ${cache}.prev，原位是空的 —— 处理掉那个进程，手工 mv 回去再 start"; return 1; }
   sudo mv -f "$cache.prev" "$cache" || { bad "换不回 ${cache}.prev —— 手工处理后再 start"; return 1; }
   ok "已换回旧缓存"
-  if _rules_start; then
+  _rules_start; rc=$?
+  if [ "$rc" = 0 ]; then
     ok "已回到更新前的状态"
   else
     bad "换回旧缓存后仍起不来 —— 跑 $(basename "$0") doctor"
+    [ "$rc" = 2 ] || _launchd_postmortem
   fi
   return 1
 }

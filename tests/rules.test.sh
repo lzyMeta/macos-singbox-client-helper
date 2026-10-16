@@ -271,6 +271,21 @@ for how in NOCACHE_FAIL NOCACHE_LOADFAIL; do
   fi
 done
 
+#-- AC3 回滚后也起来了但 health 不过：两次失败各验尸一次 -------------------
+# TUN 一直没接管（与缓存无关）：无缓存那次、换回旧缓存那次都是「进程在、health 不过」，
+# cmd_start 判成功、不验尸——两次都得由 _rules_update 自己补。
+setup
+echo 'FATAL[0012] start service: initial rule-set: geoip-cn: unexpected status: 502' > "$SB_LOGDIR/sing-box.err"
+orig=$(cat "$(ETC)/cache.db")
+SB_FAKE_NO_TUN=1 sb rules update
+n=$(grep -c 'initial rule-set: geoip-cn' "$LOG")
+if [ "$CODE" = 1 ] && [ "$n" = 2 ] && [ "$(cat "$(ETC)/cache.db" 2>/dev/null)" = "$orig" ] \
+   && grep -q '换回旧缓存后仍起不来' "$LOG"; then
+  ok "回滚后 health 仍不过：两次失败各验尸一次，缓存是原内容，退 1"
+else
+  ng "回滚后 health 仍不过：期望退 1、验尸 2 次、缓存换回（退出 ${CODE}，验尸 ${n} 次）" "$(events)"
+fi
+
 #-- AC6 缓存路径以配置为准：自定义绝对路径 ------------------------------
 setup
 mkdir -p "$ROOT/custom"
