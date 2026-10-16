@@ -178,6 +178,7 @@ cp config/config.example.json config.json && $EDITOR config.json   # 换掉 7 �
 │   ├── install.test.sh        install 把脚本装成 $PREFIX/bin/singbox
 │   ├── selfupdate.test.sh     update 阶段 S（脚本自更新）的状态机
 │   ├── update.test.sh         update / rollback 的状态机断言
+│   ├── rules.test.sh          rules 验证与 rules update 的预检、换缓存与回滚
 │   ├── logs.test.sh           日志体积可见性与原地截断
 │   ├── platform.test.sh       平台与 CPU 架构判定（Rosetta）
 │   ├── verify.test.sh         verify 的两档退出码

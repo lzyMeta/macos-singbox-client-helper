@@ -1866,58 +1866,138 @@ except Exception: print("")' 2>/dev/null)
 #=======================================================================
 # rules
 #=======================================================================
-cmd_rules() {
-  require_installed
-  step "验证规则集 URL"
-  dim "无缓存时下载失败，内核直接起不来；有缓存时更新失败只记一条 ERROR，继续用旧内容 —— 后者最隐蔽"
-  dim "这里只验 URL 可达，不触发更新：内核按 update_interval 自己更新，重启不会提前触发"
-  echo
-  local proxy=""
-  running && proxy="-x socks5h://$(sock_addr)"
-  local list; list=$(python3 -c "
-import json
+# remote 规则集清单，一行一个「tag url」
+_rules_list() {
+  python3 - "$CFG" <<'PY' 2>/dev/null
+import json, sys
 try:
-    d=json.load(open('$CFG'))
-    for r in d.get('route',{}).get('rule_set',[]):
-        if r.get('type')=='remote' and r.get('url'):
-            print(r['tag'], r['url'])
-except Exception: pass" 2>/dev/null)
-  if [ -z "$list" ]; then info "配置中没有 remote 规则集"; return 0; fi
+    d = json.load(open(sys.argv[1]))
+    for r in d.get("route", {}).get("rule_set", []):
+        if r.get("type") == "remote" and r.get("url"):
+            print(r["tag"], r["url"])
+except Exception:
+    pass
+PY
+}
 
-  local fail=0 total=0
+# 逐个探测 $1（_rules_list 的输出），$2 是 curl 的代理参数（空 = 直连）。
+# 每个规则集打一行，计数留在 RULES_FAIL / RULES_TOTAL。验证与 update 的预检共用。
+RULES_FAIL=0
+RULES_TOTAL=0
+_rules_probe() {
+  local list="$1" proxy="$2" tag url code
+  RULES_FAIL=0; RULES_TOTAL=0
   while read -r tag url; do
     [ -n "$tag" ] || continue
-    total=$((total+1))
-    local code
+    RULES_TOTAL=$((RULES_TOTAL+1))
     code=$(curl -s $proxy -o /dev/null -w '%{http_code}' --max-time 20 "$url" 2>/dev/null)
     if [ "$code" = 200 ]; then
       printf '%s  ✓%s %-30s 200\n' "$C_OK" "$C_N" "$tag"
     else
       printf '%s  ✗ %-30s %s%s\n' "$C_ERR" "$tag" "${code:-timeout}" "$C_N"
-      fail=$((fail+1))
+      RULES_FAIL=$((RULES_FAIL+1))
     fi
   done <<< "$list"
+}
+
+# experimental.cache_file 的生效路径。没开启（或配置读不了）返回 1、不输出。
+# 相对路径按 launchd 的 WorkingDirectory 解析——plist 里写的就是 $ETC；没写 path 即 $ETC/cache.db。
+_sb_cache_path() {
+  python3 - "$CFG" "$ETC" <<'PY' 2>/dev/null
+import json, os, sys
+try:
+    cf = json.load(open(sys.argv[1])).get("experimental", {}).get("cache_file") or {}
+except Exception:
+    sys.exit(1)
+if not cf.get("enabled"):
+    sys.exit(1)
+p = cf.get("path") or "cache.db"
+print(p if os.path.isabs(p) else os.path.join(sys.argv[2], p))
+PY
+}
+
+cmd_rules() {
+  require_installed
+  case "${1:-}" in
+    "")     _rules_verify ;;
+    update) shift
+            [ $# -eq 0 ] || die "rules update 不接受参数：$*（-h 看帮助）"
+            _rules_update ;;
+    *)      die "rules: 未知参数 $1（不带参数 = 验证 URL；update = 强制重下全部规则集）" ;;
+  esac
+}
+
+_rules_verify() {
+  step "验证规则集 URL"
+  dim "无缓存时下载失败，内核直接起不来；有缓存时更新失败只记一条 ERROR，继续用旧内容 —— 后者最隐蔽"
+  dim "这里只验 URL 可达，不触发更新：内核按 update_interval 自己更新，重启不会提前触发"
+  dim "要立刻重下：$(basename "$0") rules update"
   echo
-  if [ "$fail" -gt 0 ]; then
-    warn "$fail/$total 个规则集不可达"
+  local proxy=""
+  running && proxy="-x socks5h://$(sock_addr)"
+  local list; list=$(_rules_list)
+  if [ -z "$list" ]; then info "配置中没有 remote 规则集"; return 0; fi
+
+  _rules_probe "$list" "$proxy"
+  echo
+  if [ "$RULES_FAIL" -gt 0 ]; then
+    warn "$RULES_FAIL/$RULES_TOTAL 个规则集不可达"
     dim "404 多为分类名不对：x 可能叫 twitter、meta 可能叫 facebook、apple@cn 与 apple-cn 写法不一"
     dim "全部超时则多半是代理未运行或出站不通"
   else
-    ok "全部 $total 个规则集可达"
+    ok "全部 $RULES_TOTAL 个规则集可达"
   fi
 
   step "缓存状态"
-  if [ -f "$ETC/cache.db" ]; then
-    ls -lh "$ETC/cache.db" | awk '{printf "      %s  %s %s %s\n",$5,$6,$7,$8}'
+  local cache; cache=$(_sb_cache_path)
+  if [ -z "$cache" ]; then
+    warn "cache_file 未开启 —— 每次启动都要重下全部规则集，任一失败内核就起不来"
+  elif [ -f "$cache" ]; then
+    ls -lh "$cache" | awk '{printf "      %s  %s %s %s\n",$5,$6,$7,$8}'
     dim "有几 MB 且时间较新，说明规则集确实下下来了"
   else
-    warn "无 cache.db —— 规则集可能一次都没下成功"
+    warn "无 ${cache} —— 规则集可能一次都没下成功"
   fi
 
   # 退出码要能被自动化读：之前最后一条语句是 warn（printf），恒返回 0，
   # 于是「全部不可达」和「全部可达」在脚本外看起来一模一样。
-  [ "$fail" -gt 0 ] && return 1
+  [ "$RULES_FAIL" -gt 0 ] && return 1
   return 0
+}
+
+# 强制重下全部 remote 规则集。sing-box 只在两种时刻下载：无缓存启动（同步，任一失败即
+# FATAL 退出）与 update_interval 到期；重启不会提前触发，Clash API 的 provider 更新是空实现。
+# 所以只剩「换掉 cache.db 再起」这一条路——照 cmd_update 阶段 2 的形状：预检 → 备份 → 换 → 起 → 失败回滚。
+_rules_update() {
+  need_root; acquire_lock
+  step "强制更新规则集"
+  # 服务不在跑就没有代理，预检只能直连，在国内多半不通；而且本来就得先起一次，谈不上「更新」
+  running || die "服务没在运行 —— 先 $(basename "$0") start"
+  local cache
+  cache=$(_sb_cache_path) \
+    || die "配置没开启 experimental.cache_file —— 没有缓存时每次启动都会重下，$(basename "$0") restart 就够了"
+  sudo test -f "$cache" \
+    || die "找不到缓存 ${cache} —— 没有旧缓存可换，$(basename "$0") restart 就会全量重下"
+  local list; list=$(_rules_list)
+  [ -n "$list" ] || die "配置中没有 remote 规则集，没有可更新的"
+
+  info "预检：经正在运行的代理逐个请求规则集 URL（不动服务）"
+  _rules_probe "$list" "-x socks5h://$(sock_addr)"
+  if [ "$RULES_FAIL" -gt 0 ]; then
+    bad "预检：${RULES_FAIL}/${RULES_TOTAL} 个规则集不可达，服务没动"
+    dim "404 多为分类名不对；全部超时多半是出站不通。修好再跑"
+    return 1
+  fi
+  ok "预检：全部 ${RULES_TOTAL} 个规则集可达"
+  dim "预检走 socks，内核下载走 http_client.detour，两条路不完全一样 —— 兜底的是失败回滚"
+
+  info "计划：停服（DNS 不动）→ ${cache} 移成 ${cache}.prev → 起服，内核无缓存启动、同步重下 ${RULES_TOTAL} 个规则集"
+  info "起不来就换回 .prev 再起。期间断网几秒，失败时断两次"
+  if [ "$DRY" = 1 ]; then dim "[dry-run] 到此为止，服务与缓存都没动"; return 0; fi
+  ask "会断网几秒，继续？" y || { info "已取消，服务与缓存都没动"; return 0; }
+
+  bad "强制更新这一步还没接上"
+  return 1
 }
 
 #=======================================================================
@@ -4521,6 +4601,8 @@ singbox.sh v$VERSION —— sing-box on macOS 全生命周期管理
   syscheck            系统层复查（换网络、换硬件后跑）
                       退出码 0 全合格；1 有服务 IPv6 未关、DNS 是内网，或仍有全局 IPv6
   rules               验证规则集 URL 可达。退出码 0 全可达；1 有不可达
+  rules update        强制重下全部 remote 规则集：预检 → 停服 → 旧缓存移成 .prev → 起服
+                      预检不过不动服务；起不来就换回 .prev 再起，退出 1。会断网几秒
   debug               debug 前台跑，看每条连接落在哪个出站
   doctor              收集诊断并自动判读。退出码 0 未发现已知问题；1 命中了判据
                       诊断文件写在 0700 的临时目录里（含域名与日志，贴之前先看一眼）
@@ -4598,7 +4680,7 @@ check_platform
 # 与 cmd_install / cmd_config 的 `*) die "未知参数"` 约定不一致，这里统一补上门卫。
 # 逐个函数加参数解析没有意义——它们本来就不收参数。
 case "${CMD:-status}" in
-  sysprep|status|verify|syscheck|start|restart|debug|rules|update|rollback|doctor|uninstall|help)
+  sysprep|status|verify|syscheck|start|restart|debug|update|rollback|doctor|uninstall|help)
     [ "${#ARGS[@]}" -eq 0 ] || die "${CMD:-status} 不接受参数：${ARGS[*]}（-h 看帮助）" ;;
 esac
 
@@ -4617,7 +4699,7 @@ case "${CMD:-status}" in
   debug)     cmd_debug ;;
   edit)      cmd_edit ${ARGS[@]+"${ARGS[@]}"} ;;
   config)    cmd_config ${ARGS[@]+"${ARGS[@]}"} ;;
-  rules)     cmd_rules ;;
+  rules)     cmd_rules ${ARGS[@]+"${ARGS[@]}"} ;;
   update)    cmd_update ;;
   rollback)  cmd_rollback ;;
   dns)       cmd_dns ${ARGS[@]+"${ARGS[@]}"} ;;

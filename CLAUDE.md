@@ -9,9 +9,10 @@
 ./singbox-selfcheck.sh && ./tests/run.sh
 ```
 
-前半段是 `singbox.sh` 的静态自检（13 项），后半段是 `tests/` 下的 <!-- sdlc-doc:n tests/*.test.sh -->13<!-- sdlc-doc:end --> 个测试文件：
+前半段是 `singbox.sh` 的静态自检（13 项），后半段是 `tests/` 下的 <!-- sdlc-doc:n tests/*.test.sh -->14<!-- sdlc-doc:end --> 个测试文件：
 `cli`（参数解析）、`selfcheck`（自检项本身）、`install`（装 `singbox` 命令）、
 `selfupdate`（`update` 阶段 S 的脚本自更新）、`update`（内核升级状态机与 `rollback`）、
+`rules`（`rules update` 的预检、换缓存、回滚与 clash 模式写回：假 `launchctl` 按 `SB_FAKE_CACHE_DB` 判有无缓存）、
 `logs`（日志体积与截断）、`platform`（架构判定）、`verify`（两档退出码）、
 `config-audit`（四路发现层、迁移表、`--apply` 三条规则与四道验收）、
 `config-export`（防覆盖、0600、进程陈旧性 warn：假 `ps -o etime=` 桩在测试文件里自造）、

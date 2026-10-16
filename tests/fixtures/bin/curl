@@ -21,6 +21,9 @@
 #   SB_FAKE_CN_IP=<ip>               国内直连出口报成这个 IP（设成 1.2.3.4 即等于
 #                                    SOCKS 出口，用来驱动「国内直连失效」的硬失败）
 #
+#   —— rules：规则集 URL 探测（-w '%{http_code}'）——
+#   SB_FAKE_RULE_FAIL=<子串>         URL 含这个子串的 .srs 回 404，其余回 200
+#
 #   —— 阶段 S（脚本自更新）走的是**自家 repo**，按 URL 里的仓库名分流 ——
 #   SB_FAKE_SELF_LATEST=<版本>       自家 repo 的 latest release 报告的版本。
 #                                    不设 = 没有 release，那条查询直接失败，
@@ -34,14 +37,15 @@
 #
 S="${SB_FAKE_STATE:?SB_FAKE_STATE 未设置}"
 
-out="" proxy="" url="" head_only=0 want_version=0 http3=0
+out="" proxy="" url="" head_only=0 want_version=0 http3=0 wfmt=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -o) out="${2:-}"; shift 2 ;;
     -x) proxy="${2:-}"; shift 2 ;;
     -V|--version) want_version=1; shift ;;
     --http3) http3=1; shift ;;
-    -w|--connect-timeout|--max-time|--speed-time|--speed-limit|--retry) shift 2 ;;
+    -w) wfmt="${2:-}"; shift 2 ;;
+    --connect-timeout|--max-time|--speed-time|--speed-limit|--retry) shift 2 ;;
     http*|-*) case "$1" in
                 http*) url="$1" ;;
                 *) case "$1" in *I*) head_only=1 ;; esac ;;
@@ -62,6 +66,20 @@ fi
 [ "$head_only" = 1 ] && exit 0
 
 _emit() { if [ -n "$out" ]; then printf '%s' "$1" > "$out"; else printf '%s' "$1"; fi; }
+
+# 规则集 URL 探测。⚠️ 必须排在代理分支之前：rules 走的正是现网 socks 端口，
+# 落进下面那支就成了 verify 第 1 步（计数 verify_calls、吐 1.2.3.4），永远拿不到状态码。
+# 状态码是 -w 的输出，真 curl 不管 -o 指到哪都写 stdout，所以不走 _emit。
+case "$url" in
+  *.srs) case "$wfmt" in *http_code*)
+           if [ -n "${SB_FAKE_RULE_FAIL:-}" ] && case "$url" in *"$SB_FAKE_RULE_FAIL"*) true ;; *) false ;; esac; then
+             printf '404'
+           else
+             printf '200'
+           fi
+           exit 0 ;;
+         esac ;;
+esac
 
 # 走代理的请求
 if [ -n "$proxy" ]; then
