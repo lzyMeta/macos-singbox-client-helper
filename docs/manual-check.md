@@ -44,6 +44,30 @@ kind: manual
 
    规则集下载失败时内核照样启动，只是那条规则永远不命中。内核大版本升级后也跑一次。
 
+   `rules` 只验 URL，不触发更新：内核按 `update_interval`（模板是 `168h`）自己更新，重启不会提前。
+   要立刻重下（上游刚修了分类、内核刚升级、`doctor` 报过规则集更新失败）：
+
+   ```bash
+   singbox rules update          # 预检 → 停服 → cache.db 移成 cache.db.prev → 起服
+   singbox -n rules update       # 只跑前置检查与预检，打印计划，不动服务
+   ```
+
+   - **前提**：服务在运行（预检要走代理），配置开了 `experimental.cache_file`。没开缓存时每次启动都会重下，`restart` 就够了。
+   - **预检**：经正在运行的代理逐个请求规则集 URL，有一个不是 200 就**不动服务**、退出 1，并点名那个 tag。
+   - **代价**：断网几秒（TUN 拆掉再建），失败时断两次。面板上切过的 clash 模式会读出来、成功后写回；
+     selector 的选择与分组展开状态不保存，会回到默认。
+   - **失败**：无缓存启动时任一规则集下不来，内核就起不来。这时脚本会把 `cache.db.prev` 换回去再起，并打印验尸信息，退出 1。
+     预检走 socks，内核下载走 `http_client.detour`，所以预检通过也不保证内核一定下得成。
+   - **成功后想退回旧缓存**：`.prev` 只留一份，下一次 `rules update` 会覆盖它。
+
+     ```bash
+     singbox stop --keep-dns
+     sudo mv /usr/local/etc/sing-box/cache.db.prev /usr/local/etc/sing-box/cache.db
+     singbox start
+     ```
+
+     缓存路径以配置的 `experimental.cache_file.path` 为准，相对路径相对 `/usr/local/etc/sing-box`。
+
 4. 看每条连接走了哪个出站
 
    ```bash
@@ -68,6 +92,9 @@ kind: manual
 - **第 2 步两个 IP 相同** → 服务端 UUID 分流没生效或住宅中转断了。日志里照样打 `[vpsre]`，这是客户端唯一能发现它的手段。不确定就 `debug` + 另开终端 `curl -s https://ipinfo.io/json`。
 - **退出 2 但上网正常** → 你正在失去的是分流本身。按打 `✗` 的那步查：`rules` 看规则集下来没、`debug` 看连接落在哪。
 - **报「本机没有可用解析手段」** → 不是污染，是 `dig` / `host` / `dscacheutil` / `python3` 都没拿到 A 记录。先确认能上网，再看 `syscheck` 的系统 DNS。
+- **`rules update` 预检没过** → 服务没被碰过，照 `rules` 的 404 / 超时处理完再跑。
+- **`rules update` 换回了旧缓存、退出 1** → 新的规则集至少有一个内核下不来，预检的 socks 路径却通了：
+  查那条规则集的 `http_client.detour` 出站，以及验尸输出里的 `initial rule-set` 那一行。
 - **`rules` 报 404** → 分类名不对：`x` 上游可能叫 `twitter`、`meta` 叫 `facebook`、`apple@cn` 有的源写 `apple-cn`。
 - **`doctor` 报「TUN 只接管了一半默认路由」** → 比「未接管」更隐蔽：另一半地址正从 en0 直连。`restart` 后再看。
 - **`syscheck` 报 `fe80::` / `::1`** → 不会。那是链路本地与环回，脚本只报全局地址。

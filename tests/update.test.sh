@@ -164,10 +164,10 @@ echo "验证 cmd_update 的四阶段状态机与 cmd_rollback"
 setup
 sb update
 if [ "$CODE" = 0 ] && [ "$(bin_version "$(BIN)")" = "$NEW" ] \
-   && [ "$(bin_version "$(BIN).prev")" = "$OLD" ]; then
-  ok "一切正常：退出 0，新内核在位，.prev 保留了旧版本"
+   && [ "$(bin_version "$(BIN).prev")" = "$OLD" ] && grep -q 'rules update' "$LOG"; then
+  ok "一切正常：退出 0，新内核在位，.prev 保留了旧版本，提示了 rules update"
 else
-  ng "一切正常：期望 0/${NEW}/${OLD}，实际 ${CODE}/$(bin_version "$(BIN)")/$(bin_version "$(BIN).prev")"
+  ng "一切正常：期望 0/${NEW}/${OLD} 且提示 rules update，实际 ${CODE}/$(bin_version "$(BIN)")/$(bin_version "$(BIN).prev")"
 fi
 
 #-- 2. 阶段 1 沙箱 check -c 失败：现网一个字节都不该被动 -----------------
@@ -211,8 +211,9 @@ fi
 #-- 6. 阶段 3 两轮都失败：回滚（链路档，与下面第 13 条正好是分档的两半）------
 setup
 SB_FAKE_VERIFY_FAIL=all sb update
-if [ "$CODE" != 0 ] && [ "$(bin_version "$(BIN)")" = "$OLD" ]; then
-  ok "阶段 3 两轮都败：已回滚到旧版本"
+# 回滚了就没有「新内核要配新 srs」这回事：rules update 的提示只属于成功路径
+if [ "$CODE" != 0 ] && [ "$(bin_version "$(BIN)")" = "$OLD" ] && ! grep -q 'rules update' "$LOG"; then
+  ok "阶段 3 两轮都败：已回滚到旧版本，没有提示 rules update"
 else
   ng "阶段 3 两轮都败：期望非 0 且回到 ${OLD}（退出 ${CODE}，实际 $(bin_version "$(BIN)")）"
 fi

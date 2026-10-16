@@ -4360,7 +4360,8 @@ cmd_update() {
   ok "升级完成：${cur} → ${new}"
   info "旧版本保留在 ${BIN}.prev，下一次 update 才会覆盖它"
   info "事后才发现问题：$(basename "$0") rollback"
-  warn "srs 规则集有格式版本，接着跑：$(basename "$0") rules"
+  # 只提示不自动跑：规则集失败与内核失败搅在一起，update 的回滚语义就说不清了
+  warn "srs 规则集有格式版本，新内核建议重下一次：$(basename "$0") rules update（会断网几秒；只验 URL 用 rules）"
   return 0
 }
 

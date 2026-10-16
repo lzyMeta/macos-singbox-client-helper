@@ -826,7 +826,7 @@ sing-box rule-set match geosite-cn.srs claude.ai    # 测某个域名会不会�
 
 > 这些命令需要本地有 `.srs` 文件。**`type: remote` 的规则集存在 `cache.db` 里，磁盘上没有单独文件**，得自己另下一份，见 5.2。
 
-> **`.srs` 有格式版本**，随 sing-box 演进升级。上游用新版生成的 srs，旧内核可能读不了，报错往往只是"加载失败"看不出原因。**内核大版本升级后建议手动触发一次规则集更新。** sing-box 没有单独触发更新的命令（Clash API 的规则 provider 接口是空实现，面板上的「更新」按钮不起作用），只能停服、删掉 `cache.db`、再起——这会走一次「无缓存」启动：下载全部成功才起得来，任一失败内核就起不来，见 5.2。
+> **`.srs` 有格式版本**，随 sing-box 演进升级。上游用新版生成的 srs，旧内核可能读不了，报错往往只是"加载失败"看不出原因。**内核大版本升级后建议手动触发一次规则集更新。** sing-box 没有单独触发更新的命令（Clash API 的规则 provider 接口是空实现，面板上的「更新」按钮不起作用），只能换掉 `cache.db` 再起——这会走一次「无缓存」启动：下载全部成功才起得来，任一失败内核就起不来，见 5.2。脚本把这件事做成了 `singbox rules update`：先经代理预检全部 URL，再停服、把 `cache.db` 移成 `cache.db.prev`、起服，起不来就换回旧缓存再起（用法与手动退回见[检查与排查](manual-check.md)）。
 
 #### 规则集内部不是顺序匹配
 
@@ -1681,7 +1681,7 @@ log show --predicate 'process == "launchd"' --last 5m | grep -i sing-box
 * REALITY 的 `public_key` / `short_id` 泄漏等于节点泄漏，别把完整参数贴到任何在线工具或聊天群。
 * 两条节点的 UUID 分别对应"机房出口"和"住宅出口"，住宅 IP 更宝贵，不要用于大流量下载或扫描类流量，容易被 ISP 判定异常。
 * 把 `/usr/local/etc/sing-box/` 做成 git 仓库。配置改动能回溯，升级内核时对照 4.9 的废弃表也方便。
-* 内核升级后：`sing-box check` → 手动触发一次规则集更新（srs 有格式版本）→ 重跑第 5 节验证清单。
+* 内核升级后：`sing-box check` → `singbox rules update` 重下一次规则集（srs 有格式版本）→ 重跑第 5 节验证清单。
 * LaunchDaemon 以 root 常驻是本方案的安全代价。确保 `/usr/local/bin/sing-box` 和配置文件的属主是 root、其他用户不可写。
 
 ---

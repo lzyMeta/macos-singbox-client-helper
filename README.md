@@ -110,7 +110,7 @@ cp config/config.example.json config.json && $EDITOR config.json   # 换掉 7 �
 - **升级先换脚本再换内核**：`update` 的阶段 S 先把 `/usr/local/bin/singbox` 更新到最新 release 再继续 —— 历史上出问题的恰恰是升级逻辑本身而不是内核。取不到新脚本只 warn，不阻断内核升级。
 - **升级分四个阶段，每个阶段都能退回已知可用的状态**：阶段 1 把新内核装到临时前缀、用一份去掉 `tun`、改了端口的**派生配置**实跑并实测建链——现网服务全程不受影响；到阶段 2 才动 `/usr/local/bin/sing-box`，起不来就回滚；阶段 3 跑一遍 `verify` 六步验收。
 - **`rollback` 是随时能按的按钮**：升级成功后旧内核保留在 `sing-box.prev`，当时一切正常、半小时后才发现某个网站进不去，一条命令换回去。只保留一份，只能退一步。
-- **只读命令不要 sudo**：`verify`、`syscheck`、`rules` 全程无需管理员权限。
+- **只读命令不要 sudo**：`verify`、`syscheck`、`rules` 全程无需管理员权限（`rules update` 要停起服务，例外）。
 
 改动脚本后跑 `./singbox-selfcheck.sh && ./tests/run.sh`。前半段是静态自检（13 项），覆盖几类 macOS 特有的坑（bash 3.2 的变量解析与 `shift 2` 的参数消耗、BSD `mktemp` 的模板限制、`set -u` 下的空数组展开等）；后半段是 `tests/` 下的测试文件（清单见第 5 节），用 PATH 前置的桩把脚本整个跑一遍——离线、不要 sudo、不碰真实系统。
 
@@ -157,7 +157,7 @@ cp config/config.example.json config.json && $EDITOR config.json   # 换掉 7 �
 | [docs/config-audit-migration-table.md](docs/config-audit-migration-table.md) | `config audit` 第二轮：四路发现层、迁移表、三条改写规则 |
 | [docs/config-audit-findings-guide.md](docs/config-audit-findings-guide.md) | `config audit` 第三轮（规格）：每条「怎么办」的解读文档、`--deep` 撤条说明 |
 | [docs/config-export.md](docs/config-export.md) | `config export`（规格）：把生效配置导出到自定义路径，防覆盖、0600、进程陈旧性警告 |
-| [docs/rules-update.md](docs/rules-update.md) | `rules update`（规格，待实现）：强制重下全部 remote 规则集，预检、旧缓存留作 `.prev`、起不来就回滚 |
+| [docs/rules-update.md](docs/rules-update.md) | `rules update`（规格）：强制重下全部 remote 规则集，预检、旧缓存留作 `.prev`、起不来就回滚 |
 
 ---
 
@@ -211,7 +211,7 @@ cp config/config.example.json config.json && $EDITOR config.json   # 换掉 7 �
     ├── config-audit-findings-guide.md
     │                          规格：config audit 第三轮（结论解读文档）
     ├── config-export.md       规格：config export 导出生效配置
-    └── rules-update.md        规格：rules update 强制重下规则集（待实现）
+    └── rules-update.md        规格：rules update 强制重下规则集
 ```
 
 `.gitignore` 已排除 `config.json`、`*.bak`、`ui/`、`cache.db` 等本地产物——**填好参数的配置不要提交**。
