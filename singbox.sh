@@ -2013,7 +2013,7 @@ _rules_update() {
   local cache
   cache=$(_sb_cache_path) \
     || die "配置没开启 experimental.cache_file —— 没有缓存时每次启动都会重下，$(basename "$0") restart 就够了"
-  sudo test -f "$cache" \
+  [ -f "$cache" ] \
     || die "找不到缓存 ${cache} —— 没有旧缓存可换，$(basename "$0") restart 就会全量重下"
   local list; list=$(_rules_list)
   [ -n "$list" ] || die "配置中没有 remote 规则集，没有可更新的"
@@ -2047,11 +2047,13 @@ _rules_update() {
   fi
 
   step "换缓存"
-  _rules_stop || return 1
+  _rules_stop || { info "缓存没动"; return 1; }
   sudo mv -f "$cache" "$cache.prev" \
     || { bad "移不走 ${cache}，缓存没动，重新起服"; cmd_start; return 1; }
   ok "旧缓存已移到 ${cache}.prev"
-  if _rules_start; then
+  local rc
+  _rules_start; rc=$?
+  if [ "$rc" = 0 ]; then
     ok "规则集已重下（${RULES_TOTAL} 个）"
     if [ -n "$mode" ]; then
       # 写回失败不回滚：规则集已经换好了，模式在面板里点一下就回来
@@ -2078,9 +2080,9 @@ PY
   # 无缓存起不来（任一规则集下不来就 FATAL）或起来了但 health 不过：换回旧缓存。
   # 这次走有缓存的路径，下载失败只记 ERROR、照样起得来。
   bad "无缓存启动没成功 —— 换回旧缓存"
-  _launchd_postmortem
+  [ "$rc" = 2 ] || _launchd_postmortem   # 2 = cmd_start 自己判的失败，它已经验过尸
   step "回滚"
-  _rules_stop || return 1
+  _rules_stop || { bad "旧缓存还在 ${cache}.prev，原位是空的 —— 处理掉那个进程，手工 mv 回去再 start"; return 1; }
   sudo mv -f "$cache.prev" "$cache" || { bad "换不回 ${cache}.prev —— 手工处理后再 start"; return 1; }
   ok "已换回旧缓存"
   if _rules_start; then
@@ -2098,7 +2100,7 @@ _rules_stop() {
   local i=0
   while running && [ "$i" -lt 10 ]; do sleep 1; i=$((i + 1)); done
   if running; then
-    bad "停服之后仍有 sing-box 进程（debug 或手动前台实例），缓存没动"
+    bad "停服之后仍有 sing-box 进程（debug 或手动前台实例）"
     info "服务已 bootout：处理掉那个进程后跑 $(basename "$0") start"
     return 1
   fi
@@ -2106,8 +2108,9 @@ _rules_stop() {
 
 # 起服并等到健康。无缓存时内核要同步下完全部规则集才开始监听，cmd_start 固定等的 2 秒
 # 远远不够——直接跑 _sb_health 会把一次正在成功的更新判成失败。进程消失（FATAL）立即放弃。
+# 返回 0 就绪；1 起来了但没就绪；2 cmd_start 自己判的失败（它已经打过验尸）。
 _rules_start() {
-  cmd_start || return 1
+  cmd_start || return 2
   info "等内核就绪（无缓存要先下完规则集，最多 ${RULES_READY_WAIT}s）"
   local i=0
   while [ "$i" -lt "$RULES_READY_WAIT" ]; do

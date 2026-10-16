@@ -85,7 +85,7 @@ cp config/config.example.json config.json && $EDITOR config.json   # 换掉 7 �
 |---|---|
 | 安装 | `install` `sysprep` |
 | 运行 | `status` `start` `stop` `restart` `enable` `disable` `logs` |
-| 检查 | `verify` `syscheck` `rules` `debug` `doctor` |
+| 检查 | `verify` `syscheck` `rules`（含 `rules update`） `debug` `doctor` |
 | 配置 | `edit` `config`（含 `config audit`） `dns` |
 | 维护 | `update` `rollback` `mirror` `uninstall` |
 
@@ -95,6 +95,7 @@ cp config/config.example.json config.json && $EDITOR config.json   # 换掉 7 �
 
 - **`verify`** 六步验证，**没有任何一步会被静默跳过**——退出码 `0` 全过、`1` 链路档失败（换内核可能修好）、`2` 仅策略档失败（DNS/QUIC/国内直连，回滚换不回来，`update` 不会因此回滚）。**第 2 步最关键**：两个出口 IP 必须不同——日志只能证明"流量派给了 `vpsre` 出站"，证明不了它的出口真是住宅 IP（那段中转在服务端，客户端看不见）。这是客户端侧唯一能发现中转断掉的手段。
 - **`config audit`** 审查配置里的废弃字段与不合法之处，用的是当前装着的那个内核。退出码 `0` 干净、`2` 有废弃项但现在还能跑、`1` 内核已经不接受。`--apply` 能自动改掉三类常见废弃写法（改前备份，改后四道验收，不过就不落地）；`--deep` 起一次沙箱收内核运行时的告警（要网络）。升级内核前跑一次。
+- **`rules update`** 强制重下全部 remote 规则集——内核自己只在 `update_interval` 到期时更新，重启不会提前，面板上的「更新」按钮是空实现。先经代理预检全部 URL（不通就不动服务），再停服、把 `cache.db` 移成 `cache.db.prev`、起服；无缓存起不来就换回旧缓存再起。会断网几秒。内核升级后跑一次。
 - **`syscheck`** 最容易忘、也最该记住。IPv6 与 DNS 设置**按网络服务生效、不会继承**——插网卡、连手机热点、公司 VPN 退出没还原 DNS，都会留下缺口，而代理看起来一切正常。
 - **`doctor`** 出问题先跑它，自动判读十类常见故障并输出诊断文件（写在 0700 的临时目录里 —— 里面有你访问过的域名与日志，贴出来之前先看一眼）。
 - **`edit`** 改配置走"校验 → 备份 → 重启"，两关都过才写入，不过则保留你的修改到临时文件。
@@ -126,7 +127,7 @@ cp config/config.example.json config.json && $EDITOR config.json   # 换掉 7 �
 |---|---|
 | [首次安装](docs/manual-install.md) | `install` `sysprep` |
 | [日常运行](docs/manual-daily.md) | `status` `start` `stop` `restart` `enable` `disable` `dns` `logs` |
-| [检查与排查](docs/manual-check.md) | `verify` `syscheck` `rules` `debug` `doctor` |
+| [检查与排查](docs/manual-check.md) | `verify` `syscheck` `rules`（含 `rules update`） `debug` `doctor` |
 | [改配置与配置审查](docs/manual-config.md) | `edit` `config`（含 `config audit`） |
 | [升级、回退与卸载](docs/manual-update.md) | `update` `rollback` `mirror` `uninstall` |
 

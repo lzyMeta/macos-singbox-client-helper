@@ -100,7 +100,7 @@ Clash API 的 `PUT /providers/rules/:name` 是空实现（`experimental/clashapi
 
 ## 待定问题
 
-- 用户自己加了 selector 时，选择会回到默认：按假设处理，配置里有 `selector` / `urltest` 出站时，成功后打印一行提示，不保存不写回 —— 用户
+- 用户自己加了 selector 时，选择会回到默认：按假设处理，配置里有 `selector` / `urltest` 出站时，成功后打印一行提示，不保存不写回 —— 已按此实现
 - `clash_api.external_controller` 绑在 `0.0.0.0` 或 IPv6 地址上时，请求一律改走 `127.0.0.1:<端口>` —— 已定
 - 面板模式写回失败（`secret` 不对、API 没起来）只 warn、不回滚 —— 已定
 
