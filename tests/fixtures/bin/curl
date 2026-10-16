@@ -24,6 +24,11 @@
 #   —— rules：规则集 URL 探测（-w '%{http_code}'）——
 #   SB_FAKE_RULE_FAIL=<子串>         URL 含这个子串的 .srs 回 404，其余回 200
 #
+#   —— rules update：clash_api 的 GET / PATCH /configs ——
+#   模式存在 $SB_FAKE_STATE/clash_mode（不在 = 默认 Rule；假 launchctl 无缓存起服时会删掉它），
+#   每次请求记一行进 $SB_FAKE_STATE/clash_events：GET / PATCH:<mode> / DENY:<方法>
+#   SB_FAKE_CLASH_SECRET=<串>        要求 Authorization: Bearer <串>，对不上回 401（curl -f 退 22）
+#
 #   —— 阶段 S（脚本自更新）走的是**自家 repo**，按 URL 里的仓库名分流 ——
 #   SB_FAKE_SELF_LATEST=<版本>       自家 repo 的 latest release 报告的版本。
 #                                    不设 = 没有 release，那条查询直接失败，
@@ -37,7 +42,7 @@
 #
 S="${SB_FAKE_STATE:?SB_FAKE_STATE 未设置}"
 
-out="" proxy="" url="" head_only=0 want_version=0 http3=0 wfmt=""
+out="" proxy="" url="" head_only=0 want_version=0 http3=0 wfmt="" method="" auth="" data=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -o) out="${2:-}"; shift 2 ;;
@@ -45,6 +50,9 @@ while [ $# -gt 0 ]; do
     -V|--version) want_version=1; shift ;;
     --http3) http3=1; shift ;;
     -w) wfmt="${2:-}"; shift 2 ;;
+    -X) method="${2:-}"; shift 2 ;;
+    -H) case "${2:-}" in Authorization:*) auth="$2" ;; esac; shift 2 ;;
+    -d) data="${2:-}"; shift 2 ;;
     --connect-timeout|--max-time|--speed-time|--speed-limit|--retry) shift 2 ;;
     http*|-*) case "$1" in
                 http*) url="$1" ;;
@@ -136,6 +144,19 @@ case "$url" in
     [ -n "${SB_FAKE_SELF_SCRIPT:-}" ] && [ -f "$SB_FAKE_SELF_SCRIPT" ] || exit 22
     [ -n "$out" ] || exit 22
     cp "$SB_FAKE_SELF_SCRIPT" "$out" ;;
+  */configs)
+    if [ -n "${SB_FAKE_CLASH_SECRET:-}" ] && [ "$auth" != "Authorization: Bearer $SB_FAKE_CLASH_SECRET" ]; then
+      echo "DENY:${method:-GET}" >> "$S/clash_events"; exit 22
+    fi
+    case "${method:-GET}" in
+      GET)   echo GET >> "$S/clash_events"
+             _emit "{\"port\":0,\"mode\":\"$(cat "$S/clash_mode" 2>/dev/null || echo Rule)\"}" ;;
+      PATCH) _m=$(printf '%s' "$data" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("mode",""))' 2>/dev/null)
+             echo "PATCH:${_m}" >> "$S/clash_events"
+             [ -n "$_m" ] || exit 22
+             printf '%s' "$_m" > "$S/clash_mode" ;;
+      *)     exit 22 ;;
+    esac ;;
   *api.ipify.org*)   _emit "5.6.7.8" ;;
   *ipinfo.io*)       n=$(( $(cat "$S/ipinfo_calls" 2>/dev/null || echo 0) + 1 ))
                      echo "$n" > "$S/ipinfo_calls"

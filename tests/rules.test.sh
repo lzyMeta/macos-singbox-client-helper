@@ -280,6 +280,31 @@ else
   ng "cache_file 没写 path：期望 \$ETC/cache.db.prev = 原缓存（退出 ${CODE}）" "$(events)"
 fi
 
+#-- AC5 clash 模式：更新前是 Global，更新后仍是 Global ---------------------
+# 无缓存起服会把模式打回默认（假 launchctl 删 clash_mode）——不写回，这里读到的就是空。
+# secret 要求对上：请求不带 Bearer 会被拒，GET 读不到，同样写不回。
+setup
+echo Global > "$SB_FAKE_STATE/clash_mode"
+export SB_FAKE_CLASH_SECRET=s3cret
+sb rules update
+if [ "$CODE" = 0 ] && [ "$(cat "$SB_FAKE_STATE/clash_mode" 2>/dev/null)" = Global ] \
+   && grep -q '^PATCH:Global$' "$SB_FAKE_STATE/clash_events" 2>/dev/null; then
+  ok "clash 模式：更新前 Global，更新后写回 Global（带 secret）"
+else
+  ng "clash 模式：期望退 0、mode 仍是 Global 且 PATCH 过（退出 ${CODE}，mode=$(cat "$SB_FAKE_STATE/clash_mode" 2>/dev/null)）" \
+     "$(tr '\n' ' ' 2>/dev/null < "$SB_FAKE_STATE/clash_events")"
+fi
+
+#-- AC5 没开 clash_api：不发请求，只打一行跳过 ---------------------------
+setup
+write_cfg rel 0
+sb rules update
+if [ "$CODE" = 0 ] && [ ! -s "$SB_FAKE_STATE/clash_events" ] && grep -q 'clash_api.*跳过' "$LOG"; then
+  ok "没开 clash_api：不请求 /configs，打一行跳过"
+else
+  ng "没开 clash_api：期望退 0、无 /configs 请求、日志有跳过提示（退出 ${CODE}）"
+fi
+
 echo
 printf '通过 %d，失败 %d\n' "$pass" "$fail"
 [ "$fail" = 0 ]

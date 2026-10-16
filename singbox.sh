@@ -1966,6 +1966,42 @@ _rules_verify() {
   return 0
 }
 
+# clash_api 的地址与 secret，tab 分隔。没开 clash_api 返回 1、不输出。
+# 绑在 0.0.0.0、空主机或 IPv6 地址上时一律改走 127.0.0.1:<端口>——那些不是能直接连的地址。
+_clash_endpoint() {
+  python3 - "$CFG" <<'PY' 2>/dev/null
+import json, sys
+try:
+    c = json.load(open(sys.argv[1])).get("experimental", {}).get("clash_api") or {}
+except Exception:
+    sys.exit(1)
+host, _, port = (c.get("external_controller") or "").rpartition(":")
+if not port.isdigit():
+    sys.exit(1)
+host = host.strip("[]")
+if host in ("", "0.0.0.0") or ":" in host:
+    host = "127.0.0.1"
+print("%s:%s\t%s" % (host, port, c.get("secret") or ""))
+PY
+}
+
+# clash_api 的 /configs。$1 = _clash_endpoint 的输出，$2 = GET | PATCH，$3 = PATCH 的模式。
+# GET 输出当前 mode。--noproxy：控制器在本机，不能让环境里的 http_proxy 截走。
+_clash_configs() {
+  local addr secret body
+  IFS=$'\t' read -r addr secret <<< "$1"
+  local auth=()
+  [ -n "$secret" ] && auth=(-H "Authorization: Bearer $secret")
+  if [ "$2" = GET ]; then
+    curl -sf --noproxy '*' --max-time 5 ${auth[@]+"${auth[@]}"} "http://$addr/configs" 2>/dev/null \
+      | python3 -c 'import json,sys; print(json.load(sys.stdin).get("mode") or "")' 2>/dev/null
+  else
+    body=$(python3 -c 'import json,sys; print(json.dumps({"mode": sys.argv[1]}))' "$3")
+    curl -sf --noproxy '*' --max-time 5 -X PATCH ${auth[@]+"${auth[@]}"} \
+      -H 'Content-Type: application/json' -d "$body" "http://$addr/configs" >/dev/null 2>&1
+  fi
+}
+
 # 强制重下全部 remote 规则集。sing-box 只在两种时刻下载：无缓存启动（同步，任一失败即
 # FATAL 退出）与 update_interval 到期；重启不会提前触发，Clash API 的 provider 更新是空实现。
 # 所以只剩「换掉 cache.db 再起」这一条路——照 cmd_update 阶段 2 的形状：预检 → 备份 → 换 → 起 → 失败回滚。
@@ -1997,6 +2033,19 @@ _rules_update() {
   if [ "$DRY" = 1 ]; then dim "[dry-run] 到此为止，服务与缓存都没动"; return 0; fi
   ask "会断网几秒，继续？" y || { info "已取消，服务与缓存都没动"; return 0; }
 
+  # 面板上切过的模式（Rule / Global / Direct）存在 cache.db 里，无缓存起服会回到默认
+  local clash mode=""
+  if clash=$(_clash_endpoint); then
+    mode=$(_clash_configs "$clash" GET)
+    if [ -n "$mode" ]; then
+      info "当前 clash 模式：${mode}（成功后写回）"
+    else
+      warn "读不到当前 clash 模式（clash_api 没响应或 secret 不对）—— 成功后不写回，模式会回到默认"
+    fi
+  else
+    dim "配置没开 clash_api，跳过模式保存"
+  fi
+
   step "换缓存"
   _rules_stop || return 1
   sudo mv -f "$cache" "$cache.prev" \
@@ -2004,6 +2053,23 @@ _rules_update() {
   ok "旧缓存已移到 ${cache}.prev"
   if _rules_start; then
     ok "规则集已重下（${RULES_TOTAL} 个）"
+    if [ -n "$mode" ]; then
+      # 写回失败不回滚：规则集已经换好了，模式在面板里点一下就回来
+      if _clash_configs "$clash" PATCH "$mode"; then
+        ok "clash 模式已写回 ${mode}"
+      else
+        warn "clash 模式写回失败 —— 在面板里手动切回 ${mode}"
+      fi
+    fi
+    # cache.db 里还存着 selector 的选择与面板分组的展开状态，这些不保存也不写回
+    if python3 - "$CFG" <<'PY' 2>/dev/null
+import json, sys
+d = json.load(open(sys.argv[1]))
+sys.exit(0 if any(o.get("type") in ("selector", "urltest") for o in d.get("outbounds", [])) else 1)
+PY
+    then
+      info "配置里有 selector / urltest：面板上的选择已回到默认，需要的话重新选"
+    fi
     info "旧缓存留在 ${cache}.prev，下一次 rules update 才覆盖它"
     info "要退回：$(basename "$0") stop --keep-dns → sudo mv ${cache}.prev ${cache} → $(basename "$0") start"
     return 0
