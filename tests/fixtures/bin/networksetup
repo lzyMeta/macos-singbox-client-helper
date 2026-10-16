@@ -4,6 +4,9 @@
 #
 #   SB_FAKE_SERVICES=<换行分隔>   服务列表，默认单个 "Wi-Fi"
 #   SB_FAKE_DNS=<地址>            -getdnsservers 报告的地址，默认 192.168.1.1（内网，会触发提示）
+#
+# 设了 SB_FAKE_STATE 时，-setdnsservers 记进 $SB_FAKE_STATE/dns_events，
+# 「这一步不该动 DNS」才有东西可断言。
 case "${1:-}" in
   -listallnetworkservices)
     echo "An asterisk (*) denotes that a network service is disabled."
@@ -14,7 +17,10 @@ case "${1:-}" in
     echo "IPv6: ${SB_FAKE_IPV6:-Automatic}" ;;
   -getdnsservers)
     printf '%s\n' "${SB_FAKE_DNS:-192.168.1.1}" ;;
-  -setv6off|-setv6automatic|-setdnsservers) exit 0 ;;
+  -setdnsservers)
+    [ -n "${SB_FAKE_STATE:-}" ] && echo "setdns:$*" >> "$SB_FAKE_STATE/dns_events"
+    exit 0 ;;
+  -setv6off|-setv6automatic) exit 0 ;;
   *) exit 0 ;;
 esac
 exit 0

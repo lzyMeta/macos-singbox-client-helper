@@ -1884,6 +1884,7 @@ PY
 # 每个规则集打一行，计数留在 RULES_FAIL / RULES_TOTAL。验证与 update 的预检共用。
 RULES_FAIL=0
 RULES_TOTAL=0
+RULES_READY_WAIT=120
 _rules_probe() {
   local list="$1" proxy="$2" tag url code
   RULES_FAIL=0; RULES_TOTAL=0
@@ -1996,8 +1997,59 @@ _rules_update() {
   if [ "$DRY" = 1 ]; then dim "[dry-run] 到此为止，服务与缓存都没动"; return 0; fi
   ask "会断网几秒，继续？" y || { info "已取消，服务与缓存都没动"; return 0; }
 
-  bad "强制更新这一步还没接上"
+  step "换缓存"
+  _rules_stop || return 1
+  sudo mv -f "$cache" "$cache.prev" \
+    || { bad "移不走 ${cache}，缓存没动，重新起服"; cmd_start; return 1; }
+  ok "旧缓存已移到 ${cache}.prev"
+  if _rules_start; then
+    ok "规则集已重下（${RULES_TOTAL} 个）"
+    info "旧缓存留在 ${cache}.prev，下一次 rules update 才覆盖它"
+    info "要退回：$(basename "$0") stop --keep-dns → sudo mv ${cache}.prev ${cache} → $(basename "$0") start"
+    return 0
+  fi
+
+  # 无缓存起不来（任一规则集下不来就 FATAL）或起来了但 health 不过：换回旧缓存。
+  # 这次走有缓存的路径，下载失败只记 ERROR、照样起得来。
+  bad "无缓存启动没成功 —— 换回旧缓存"
+  _launchd_postmortem
+  step "回滚"
+  _rules_stop || return 1
+  sudo mv -f "$cache.prev" "$cache" || { bad "换不回 ${cache}.prev —— 手工处理后再 start"; return 1; }
+  ok "已换回旧缓存"
+  if _rules_start; then
+    ok "已回到更新前的状态"
+  else
+    bad "换回旧缓存后仍起不来 —— 跑 $(basename "$0") doctor"
+  fi
   return 1
+}
+
+# 停服且等进程退净。cmd_stop 在进程没退时也只 warn、返回 0，而 cmd_start 看到 running
+# 会说「已在运行」直接退 0——那样缓存换了个寂寞，旧进程还拿着旧规则集，脚本却报成功。
+_rules_stop() {
+  cmd_stop --keep-dns
+  local i=0
+  while running && [ "$i" -lt 10 ]; do sleep 1; i=$((i + 1)); done
+  if running; then
+    bad "停服之后仍有 sing-box 进程（debug 或手动前台实例），缓存没动"
+    info "服务已 bootout：处理掉那个进程后跑 $(basename "$0") start"
+    return 1
+  fi
+}
+
+# 起服并等到健康。无缓存时内核要同步下完全部规则集才开始监听，cmd_start 固定等的 2 秒
+# 远远不够——直接跑 _sb_health 会把一次正在成功的更新判成失败。进程消失（FATAL）立即放弃。
+_rules_start() {
+  cmd_start || return 1
+  info "等内核就绪（无缓存要先下完规则集，最多 ${RULES_READY_WAIT}s）"
+  local i=0
+  while [ "$i" -lt "$RULES_READY_WAIT" ]; do
+    running || break
+    _sb_health >/dev/null 2>&1 && break
+    sleep 2; i=$((i + 2))
+  done
+  _sb_health
 }
 
 #=======================================================================

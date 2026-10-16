@@ -111,6 +111,7 @@ setup() {
   echo 1 > "$SB_FAKE_STATE/running"          # 现网服务在跑
   echo 1 > "$SB_FAKE_STATE/loaded"
   : > "$SB_FAKE_STATE/btm_events"
+  : > "$SB_FAKE_STATE/dns_events"
   python3 -c 'import socket,sys,time
 socks=[]
 for a in sys.argv[1:]:
@@ -224,6 +225,59 @@ if [ "$CODE" = 0 ] && ! booted_out && [ "$(sig "$(ETC)/cache.db")" = "$before" ]
   ok "--dry-run：退 0，没有 bootout，缓存不动"
 else
   ng "--dry-run：期望退 0、无 bootout、缓存不动（退出 ${CODE}）" "$(events)"
+fi
+
+#-- AC1 正常路径：停 → 移走缓存 → 起，起的那一刻缓存不在 ----------------
+setup
+orig=$(cat "$(ETC)/cache.db")
+sb rules update
+if [ "$CODE" = 0 ] && events | grep -q 'bootout bootstrap:[^ ]* cache:absent' \
+   && ! grep -q '^cache:present$' "$SB_FAKE_STATE/btm_events" \
+   && [ "$(cat "$(ETC)/cache.db.prev" 2>/dev/null)" = "$orig" ] \
+   && [ "$(cat "$(ETC)/cache.db" 2>/dev/null)" = fresh-cache ] \
+   && [ "$(cat "$SB_FAKE_STATE/running")" = 1 ] && [ ! -s "$SB_FAKE_STATE/dns_events" ]; then
+  ok "正常路径：退 0，bootstrap 时 cache.db 不在，.prev 是原缓存，DNS 没动"
+else
+  ng "正常路径：期望退 0、bootout 后 cache:absent、.prev = 原缓存、DNS 无写入（退出 ${CODE}）" \
+     "$(events) | dns: $(tr '\n' ' ' < "$SB_FAKE_STATE/dns_events" 2>/dev/null)"
+fi
+
+#-- AC3 无缓存起不来：换回旧缓存再起 -------------------------------------
+setup
+orig=$(cat "$(ETC)/cache.db")
+SB_FAKE_NOCACHE_FAIL=1 sb rules update
+if [ "$CODE" = 1 ] && [ "$(cat "$SB_FAKE_STATE/running")" = 1 ] \
+   && [ "$(cat "$(ETC)/cache.db" 2>/dev/null)" = "$orig" ] \
+   && events | grep -q 'cache:absent .*bootout bootstrap:[^ ]* cache:present'; then
+  ok "无缓存起不来：换回旧缓存再起，服务在跑，缓存是原内容，退 1"
+else
+  ng "无缓存起不来：期望退 1、服务在跑、cache.db = 原内容、第二次 bootstrap 有缓存（退出 ${CODE}）" "$(events)"
+fi
+
+#-- AC6 缓存路径以配置为准：自定义绝对路径 ------------------------------
+setup
+mkdir -p "$ROOT/custom"
+write_cfg "abs:$ROOT/custom/c.db" 1
+printf 'custom-old' > "$ROOT/custom/c.db"
+export SB_FAKE_CACHE_DB="$ROOT/custom/c.db"
+etc_before=$(sig "$(ETC)/cache.db")
+sb rules update
+if [ "$CODE" = 0 ] && [ "$(cat "$ROOT/custom/c.db.prev" 2>/dev/null)" = custom-old ] \
+   && [ ! -e "$(ETC)/cache.db.prev" ] && [ "$(sig "$(ETC)/cache.db")" = "$etc_before" ]; then
+  ok "自定义 cache_file.path：移走的是那个文件，\$ETC/cache.db 没被碰"
+else
+  ng "自定义 cache_file.path：期望 c.db.prev = 原内容、\$ETC 下无 .prev（退出 ${CODE}）" "$(events)"
+fi
+
+#-- AC6 没写 path：默认 $ETC/cache.db ------------------------------------
+setup
+write_cfg nopath 1
+orig=$(cat "$(ETC)/cache.db")
+sb rules update
+if [ "$CODE" = 0 ] && [ "$(cat "$(ETC)/cache.db.prev" 2>/dev/null)" = "$orig" ]; then
+  ok "cache_file 没写 path：按 \$ETC/cache.db 处理"
+else
+  ng "cache_file 没写 path：期望 \$ETC/cache.db.prev = 原缓存（退出 ${CODE}）" "$(events)"
 fi
 
 echo

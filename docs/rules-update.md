@@ -131,7 +131,7 @@ Clash API 的 `PUT /providers/rules/:name` 是空实现（`experimental/clashapi
 基线：ee7d7e893110d80615d0c0eb48f04ca4b55c9598
 
 - [x] U1 分发与参数解析、`_rules_list` / `_rules_probe` 抽取、`_sb_cache_path`、前置条件、预检、`--dry-run`（AC2、AC4、AC6 拒绝半、AC7、AC8）
-- [ ] U2 停服等进程退净 → 移缓存 → 起服 → 轮询就绪 → `_sb_health`；失败换回 `.prev` 再起（AC1、AC3、AC6 自定义路径半）
+- [x] U2 停服等进程退净 → 移缓存 → 起服 → 轮询就绪 → `_sb_health`；失败换回 `.prev` 再起（AC1、AC3、AC6 自定义路径半）
 - [ ] U3 clash `mode` 读出与写回、selector / urltest 提示（AC5）
 - [ ] U4 `update` 收尾提示（AC9）、文档（README、manual-check、best-practices 两处、CLAUDE.md 计数与清单）、`shipped`
 

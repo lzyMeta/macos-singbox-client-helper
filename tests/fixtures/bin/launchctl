@@ -11,6 +11,12 @@
 #                               返回 0，进程不出现，launchd 随即把服务整个移除
 #                               （之后 print 报未加载）。2026-09-15 在 macOS 27.0 上
 #                               的真实形状：sing-box 自己一行日志都没有。
+#   SB_FAKE_CACHE_DB=<路径>     rules update 用：bootstrap 时把这个缓存在不在记进事件
+#                               （cache:present / cache:absent）。不在 = 无缓存启动：
+#                               内核同步重下全部规则集，成了就写出一份新缓存，clash
+#                               模式也跟着回到默认（模式存在 cache.db 里）
+#   SB_FAKE_NOCACHE_FAIL=1      无缓存启动时有规则集下不来：FATAL 退出，进程不出现。
+#                               bootstrap 本身照样返回 0，和真 launchd 一样
 #
 S="${SB_FAKE_STATE:?SB_FAKE_STATE 未设置}"
 
@@ -67,6 +73,16 @@ case "${1:-}" in
   bootstrap)
     echo "bootstrap:$(_live_version)" >> "$S/btm_events"
     _live_sig > "$S/btm_cdhash"; echo 1 > "$S/loaded"
+    if [ -n "${SB_FAKE_CACHE_DB:-}" ]; then
+      if [ -e "$SB_FAKE_CACHE_DB" ]; then
+        echo "cache:present" >> "$S/btm_events"
+      else
+        echo "cache:absent" >> "$S/btm_events"
+        [ "${SB_FAKE_NOCACHE_FAIL:-}" = 1 ] && { _stop; exit 0; }
+        printf 'fresh-cache' > "$SB_FAKE_CACHE_DB"
+        rm -f "$S/clash_mode"
+      fi
+    fi
     _start ;;
   bootout)
     echo "bootout" >> "$S/btm_events"
