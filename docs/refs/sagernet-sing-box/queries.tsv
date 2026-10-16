@@ -16,6 +16,18 @@
 832574a3	e237007c
 832574a3	fd29b693
 832574a3	meta	ruleProviderRouter provider.go stub not implemented cache router fakeip flush	2026-09-10
+a22621e6	3dfad514
+a22621e6	673fdf6d
+a22621e6	af37b6c8
+a22621e6	b1b9f73b
+a22621e6	bb589bcf
+a22621e6	meta	RemoteRuleSet PostStart loopUpdate ticker update_interval lastUpdated etag 304	2026-10-16
+aa88ce48	3969de70
+aa88ce48	3dfad514
+aa88ce48	b1b9f73b
+aa88ce48	e7c05f09
+aa88ce48	f6b083df
+aa88ce48	meta	remote rule-set update_interval cache_file behavior: when is a remote rule set downloaded and updated	2026-10-16
 ddccee2a	1d9dd509
 ddccee2a	20f17d6f
 ddccee2a	7c417bde

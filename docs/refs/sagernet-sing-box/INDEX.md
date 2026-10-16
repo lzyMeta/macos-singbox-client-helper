@@ -10,10 +10,13 @@
 | [[2b290c7a]] | info | TCP > Structure | — |
 | [[2e885d56]] | code | Empty direct outbound validation logic | E.New |
 | [[30b35cff]] | code | HTTP Outbound Configuration Structure (JSON) | — |
+| [[3969de70]] | code | New Geosite rule-sets configuration (1.8.0) | — |
 | [[3b7cc01c]] | info | Rules > query_type | — |
 | [[3c32f7cf]] | code | Rule Set Compilation | — |
+| [[3dfad514]] | info | rule-set > Remote Fields | — |
 | [[4f4d77a8]] | info | DNS > rule > ip_version | — |
 | [[5033cacc]] | code | Legacy DNS server detour field removed | — |
+| [[673fdf6d]] | code | RemoteRuleSet struct with subscription URL and outbound reference fields | — |
 | [[6fa69827]] | code | Resolve Action Configuration | — |
 | [[7011fa9e]] | info | DNS > rule > query_type | — |
 | [[7346e361]] | code | Migrate DNS Outbound to Hijack-DNS Action | — |
@@ -23,6 +26,9 @@
 | [[9b802725]] | code | Sing-Box DNS Rules: Prevent DNS Leaks (JSON) | — |
 | [[a1563051]] | code | Migrate DNS server configuration | — |
 | [[a8d33820]] | info | 1.14.0 > Migrate address filter fields to response matching | — |
+| [[af37b6c8]] | info | rule-set | — |
+| [[b1b9f73b]] | code | Remote rule_set downloading occurs at start, not during check | E.Cause, RemoteRuleSet.StartContext |
+| [[bb589bcf]] | code | Remote rule-set structure | — |
 | [[cc33ceae]] | code | New DNS rule configuration with match_response | — |
 | [[cdd599eb]] | info | Legacy Address Filter Fields > ip_cidr | — |
 | [[d0acb0ee]] | info | ip_version and query_type behavior changes in DNS rules | — |
@@ -33,6 +39,8 @@
 | [[e237007c]] | code | Migrate DNS server and fakeip configuration | — |
 | [[e2624c49]] | code | Clash API config endpoint supports partial updates (mode switching) | — |
 | [[e5286f5c]] | code | DNS Rules Configuration Structure | — |
+| [[e7c05f09]] | code | New GeoIP rule-sets configuration (1.8.0) | — |
+| [[f6b083df]] | info | rule-set > Remote Fields | — |
 | [[f8d90d45]] | code | Configs endpoints (GET, PATCH, PUT) and schema | — |
 | [[fd29b693]] | code | Migrate store_rdrc to store_dns | — |
 | [[ffab2684]] | code | Migrate Inbound Sniffing to Rule Actions | — |

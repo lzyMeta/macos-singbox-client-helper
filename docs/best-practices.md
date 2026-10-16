@@ -799,7 +799,7 @@ direct 出站的 `domain_resolver` 含义不同——官方明确区分：**`dir
 | `type` | `remote` | 另有 `local`（读本地文件）和 `inline`（直接写在配置里） |
 | `format` | 不写 | 1.10 起按 URL 后缀推断：`.srs` 是 `binary`，`.json` 是 `source`。写了就必须和文件真实格式一致 |
 | `http_client.detour` | `vpstrans` | **通过代理下载**，规则集在国内多半下不动。1.14 起替代 `download_detour`（`config audit --apply` 会自动改） |
-| `update_interval` | `168h0m0s` | 自动更新周期（7 天）。`7d` 也接受，`sing-box format` 会把它写成这个样子 |
+| `update_interval` | `168h0m0s` | 自动更新周期（7 天，不写默认 `1d`）。`7d` 也接受，`sing-box format` 会把它写成这个样子。上次更新时间存在 `cache.db` 里，**重启不重置计时、也不会提前触发更新**；到期请求带 `If-None-Match`，上游没变就是 304、只刷时间戳；更新失败记一条 `ERROR … fetch rule-set <tag>`，继续用旧内容，下个周期才重试 |
 
 #### `.srs` 和 `.json` 的区别
 
@@ -826,7 +826,7 @@ sing-box rule-set match geosite-cn.srs claude.ai    # 测某个域名会不会�
 
 > 这些命令需要本地有 `.srs` 文件。**`type: remote` 的规则集存在 `cache.db` 里，磁盘上没有单独文件**，得自己另下一份，见 5.2。
 
-> **`.srs` 有格式版本**，随 sing-box 演进升级。上游用新版生成的 srs，旧内核可能读不了，报错往往只是"加载失败"看不出原因。**内核大版本升级后建议手动触发一次规则集更新。**
+> **`.srs` 有格式版本**，随 sing-box 演进升级。上游用新版生成的 srs，旧内核可能读不了，报错往往只是"加载失败"看不出原因。**内核大版本升级后建议手动触发一次规则集更新。** sing-box 没有单独触发更新的命令（Clash API 的规则 provider 接口是空实现，面板上的「更新」按钮不起作用），只能停服、删掉 `cache.db`、再起——这会走一次「无缓存」启动：下载全部成功才起得来，任一失败内核就起不来，见 5.2。
 
 #### 规则集内部不是顺序匹配
 
@@ -874,13 +874,18 @@ done
 
 重点怀疑对象：`x.srs`（上游历史分类名是 `twitter`）、`meta.srs`（历史名是 `facebook`）、`anthropic.srs` / `bing.srs`（是否单独成类）、`apple@cn.srs`（MetaCubeX 文档里用的是 `apple-cn`，而 microsoft 确实是 `@cn` 形式，两者写法不同）。
 
-**为什么必须验**：`type: remote` 的规则集下载失败时，sing-box **不会拒绝启动**，只在日志里留一条告警，然后这条规则永远不命中。表现是"某类流量莫名走了兜底"，而规则表看起来完全正确。这是本方案最隐蔽的一类故障。
+**为什么必须验**：`type: remote` 的规则集下载失败分两种（sing-box 1.14.3 实测）：
+
+- **本地没有缓存**（首次启动、删过 `cache.db`、或改了 URL）：内核报 `FATAL … initial rule-set: <tag>: …`，**直接起不来**。分类名写错（404）在这里就会暴露，很响，不隐蔽。
+- **已有缓存**：按 `update_interval` 到期更新时失败，只记一条 `ERROR router: fetch rule-set <tag>: …`，**继续用缓存里的旧内容**，下个周期才重试。上游改了分类名、或代理恰好不通，规则会一直停在旧版本，规则表看起来完全正确——这是本方案最隐蔽的一类故障。
+
+`singbox rules` 只验 URL 可达，不触发更新；`singbox doctor` 会在日志里认这两种字样。
 
 拿不准的分类，用 `sing-box rule-set decompile` 打开看一眼实际域名，比猜名字快。
 
 #### 冷启动的先后问题
 
-规则集要通过代理下载，而代理选择又依赖规则集。实际不会死锁——规则集没就绪时路由退化到 `final`（全走 vpstrans），此时代理可用，规则集下得下来，下一轮就正常。**所以首次启动后等十几秒再测分流。**
+规则集要通过代理下载，而代理选择又依赖规则集。实际不会死锁：规则集的下载不走路由规则，直接经 `http_client.detour` 指定的出站（`vpstrans`）出去。没有缓存时这次下载是**同步**的——日志里 `updated rule-set` 排在入站 `server started` 之前，全部下完内核才算起来，任一失败就是上面那条 FATAL。所以没有「规则集还没就绪、流量先走 `final`」的窗口：**内核起来了，规则集就已经可用**。
 
 #### 规则集 vs 显式域名
 

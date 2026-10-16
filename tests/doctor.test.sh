@@ -107,6 +107,29 @@ else
   ng "doctor：没有 utun 却没报未接管（退出 ${CODE}）"
 fi
 
+#-- 6. 规则集失败的两种日志形状（2026-10-15 sing-box 1.14.3 真机抓取）-------------------
+# 旧判据 `failed to download rule.set` / `rule.set.*fail` 对 1.14 的两种失败行都是 0 命中：
+#   无缓存：FATAL … initial rule-set: <tag>: …   —— 内核起不来
+#   有缓存：ERROR router: fetch rule-set <tag>: … —— 继续用缓存里的旧内容
+# 成功形状（updated rule-set）不能被抓。
+setup
+cp "$FIX/ruleset-initial-fatal.log" "$ROOT/logs/sing-box.err"
+sb doctor
+if inlog '规则集首次下载失败'; then ok "doctor：initial rule-set FATAL → 报「首次下载失败」"
+else ng "doctor：initial rule-set FATAL 没被抓到"; fi
+
+setup
+cp "$FIX/ruleset-update-fail.log" "$ROOT/logs/sing-box.err"
+sb doctor
+if inlog '规则集更新失败'; then ok "doctor：fetch rule-set ERROR → 报「更新失败」"
+else ng "doctor：fetch rule-set ERROR 没被抓到"; fi
+
+setup
+cp "$FIX/ruleset-ok.log" "$ROOT/logs/sing-box.err"
+sb doctor
+if inlog '规则集.*失败'; then ng "doctor：规则集更新成功的日志被误报成失败"
+else ok "doctor：updated rule-set 不误报"; fi
+
 echo
 printf '通过 %d，失败 %d\n' "$pass" "$fail"
 [ "$fail" = 0 ]

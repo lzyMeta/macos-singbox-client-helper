@@ -1382,6 +1382,13 @@ _stop_all_instances() {
   return 0
 }
 
+# 规则集失败的两种日志形状（sing-box 1.14.3 实测，tests/fixtures/ruleset-*.log）：
+#   无缓存时首次下载失败 → FATAL … initial rule-set: <tag>: …，内核不启动
+#   有缓存时周期更新失败 → ERROR router: fetch rule-set <tag>: …，继续用缓存里的旧内容
+# 旧字样 failed to download rule-set 留在交替里，1.14 不再打印它。
+RS_INITIAL_FAIL_RE='initial rule-set'
+RS_UPDATE_FAIL_RE='fetch rule-set\|failed to download rule.set'
+
 # 判读日志，返回 0=无致命问题
 _diagnose_log() {
   local f="$1" fatal=0
@@ -1398,11 +1405,24 @@ _diagnose_log() {
   # ⚠️ 别写成 `grep -c … || echo 0`：grep -c 无匹配时**已经打印了 0** 并返回 1，
   # 那个 || 会再追加一个，nf 变成 "0\n0"，后面的 [ -gt ] 直接把
   # `[: 0\n0: integer expression expected` 打到用户终端——而且只在日志干净时发生。
-  local nf; nf=$(grep -ci "failed to download rule.set\|rule.set.*fail" "$f" 2>/dev/null); nf="${nf:-0}"
+  if grep -qi "$RS_INITIAL_FAIL_RE" "$f"; then
+    bad "规则集首次下载失败：本地没有缓存可用，内核起不来"
+    grep -i "$RS_INITIAL_FAIL_RE" "$f" | head -4 | cut -c1-220 | sed 's/^/        /' >&2
+    info "跑 $(basename "$0") rules 逐个验证 URL（404 多为分类名写错）"
+    fatal=1
+  fi
+  local nf; nf=$(grep -ci "$RS_UPDATE_FAIL_RE" "$f" 2>/dev/null); nf="${nf:-0}"
   if [ "${nf:-0}" -gt 0 ]; then
-    warn "有规则集下载失败 —— 不阻止启动，但那些规则永远不命中"
-    grep -i "rule.set" "$f" | grep -i fail | head -8 | sed 's/^/        /' >&2
+    warn "规则集更新失败 —— 不影响运行，但继续用的是缓存里的旧内容，下个周期才重试"
+    grep -i "$RS_UPDATE_FAIL_RE" "$f" | head -8 | cut -c1-220 | sed 's/^/        /' >&2
     info "跑 $(basename "$0") rules 逐个验证 URL"
+  fi
+  # 上面认不出的 FATAL 也是起不来。之前这里只按已知字样判，内核 FATAL 退出了，
+  # 调用方照样打印「试跑未发现致命问题」。
+  if [ "$fatal" = 0 ] && grep -q "FATAL" "$f"; then
+    bad "内核启动失败（FATAL）："
+    grep "FATAL" "$f" | head -3 | cut -c1-220 | sed 's/^/        /' >&2
+    fatal=1
   fi
   return $fatal
 }
@@ -1849,7 +1869,8 @@ except Exception: print("")' 2>/dev/null)
 cmd_rules() {
   require_installed
   step "验证规则集 URL"
-  dim "下载失败不阻止启动，只静默让规则永不命中 —— 最隐蔽的一类故障"
+  dim "无缓存时下载失败，内核直接起不来；有缓存时更新失败只记一条 ERROR，继续用旧内容 —— 后者最隐蔽"
+  dim "这里只验 URL 可达，不触发更新：内核按 update_interval 自己更新，重启不会提前触发"
   echo
   local proxy=""
   running && proxy="-x socks5h://$(sock_addr)"
@@ -4330,7 +4351,8 @@ cmd_doctor() {
   DOCTOR_FOUND=0
   grep -qi "operation not permitted" "$out" && _hit "权限不足：服务须是 LaunchDaemon（/Library/LaunchDaemons），不是 LaunchAgent"
   grep -qi "address already in use" "$out" && _hit "端口被占：见上面端口段，多为别的代理客户端或旧实例"
-  grep -qi "failed to download rule.set" "$out" && _hit "规则集下载失败：跑 $(basename "$0") rules"
+  grep -qi "$RS_INITIAL_FAIL_RE" "$out" && _hit "规则集首次下载失败（无缓存，内核起不来）：跑 $(basename "$0") rules"
+  grep -qi "$RS_UPDATE_FAIL_RE" "$out" && _hit "规则集更新失败（在用缓存里的旧内容）：跑 $(basename "$0") rules"
   grep -q "198\.18\." "$out" && _hit "出现 FakeIP 地址：跑的可能不是这份配置，或嗅探链路断了"
   grep -q "157\.240\." "$out" && _hit "DNS 疑似被投毒：跑 $(basename "$0") syscheck"
   # 这一条**保留**：$out 里含 tail $ERRFILE，也就是内核的运行日志 —— 那是
