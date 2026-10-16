@@ -2080,7 +2080,7 @@ PY
   # 无缓存起不来（任一规则集下不来就 FATAL）或起来了但 health 不过：换回旧缓存。
   # 这次走有缓存的路径，下载失败只记 ERROR、照样起得来。
   bad "无缓存启动没成功 —— 换回旧缓存"
-  [ "$rc" = 2 ] || _launchd_postmortem   # 2 = cmd_start 自己判的失败，它已经验过尸
+  [ "$rc" = 2 ] || _launchd_postmortem   # 2 = cmd_start 自己判的失败，两支都已验过尸
   step "回滚"
   _rules_stop || { bad "旧缓存还在 ${cache}.prev，原位是空的 —— 处理掉那个进程，手工 mv 回去再 start"; return 1; }
   sudo mv -f "$cache.prev" "$cache" || { bad "换不回 ${cache}.prev —— 手工处理后再 start"; return 1; }
@@ -3709,7 +3709,8 @@ cmd_start() {
       bad "启动后进程未出现"; _launchd_postmortem; return 1
     fi
   else
-    bad "加载失败"; info "跑 $(basename "$0") doctor"; return 1
+    # 两支失败都验尸：调用方（_rules_start）凭 cmd_start 的失败认定「已验过尸」，不再补
+    bad "加载失败"; _launchd_postmortem; info "跑 $(basename "$0") doctor"; return 1
   fi
 }
 

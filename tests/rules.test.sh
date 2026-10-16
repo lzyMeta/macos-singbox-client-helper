@@ -133,7 +133,7 @@ time.sleep(600)' "$SB_FAKE_LIVE_PORT" "$SB_FAKE_LIVE_CLASH_PORT" >/dev/null 2>&1
   printf 'old-cache-%s' "$RANDOM" > "$(ETC)/cache.db"
   export SB_FAKE_CACHE_DB="$(ETC)/cache.db"
 
-  unset SB_FAKE_RULE_FAIL SB_FAKE_PROBE_FAIL SB_FAKE_NOCACHE_FAIL SB_FAKE_CLASH_SECRET \
+  unset SB_FAKE_RULE_FAIL SB_FAKE_PROBE_FAIL SB_FAKE_NOCACHE_FAIL SB_FAKE_NOCACHE_LOADFAIL SB_FAKE_CLASH_SECRET \
         SB_FAKE_START_FAIL SB_FAKE_DAEMON_LOADED SB_FAKE_BTM_PIN
 }
 
@@ -253,6 +253,23 @@ if [ "$CODE" = 1 ] && [ "$(cat "$SB_FAKE_STATE/running")" = 1 ] \
 else
   ng "无缓存起不来：期望退 1、服务在跑、cache.db = 原内容、第二次 bootstrap 有缓存（退出 ${CODE}）" "$(events)"
 fi
+
+#-- AC3 两种起不来都要验尸，且只验一次 ---------------------------------
+# cmd_start 失败有两支：「进程未出现」自己验尸，「加载失败」（bootstrap 本身退非 0）不验。
+# 验尸第一件事是 tail $ERRFILE——往里放一行 FATAL，数它在输出里出现几次：0 = 漏了，2 = 重复。
+for how in NOCACHE_FAIL NOCACHE_LOADFAIL; do
+  setup
+  echo 'FATAL[0012] start service: initial rule-set: geoip-cn: unexpected status: 502' > "$SB_LOGDIR/sing-box.err"
+  orig=$(cat "$(ETC)/cache.db")
+  env "SB_FAKE_$how=1" PATH="$FIXBIN:$PATH" "$SB" --prefix "$ROOT/prefix" -y rules update >"$LOG" 2>&1; CODE=$?
+  n=$(grep -c 'initial rule-set: geoip-cn' "$LOG")
+  if [ "$CODE" = 1 ] && [ "$n" = 1 ] && [ "$(cat "$(ETC)/cache.db" 2>/dev/null)" = "$orig" ] \
+     && [ "$(cat "$SB_FAKE_STATE/running")" = 1 ]; then
+    ok "起不来（${how}）：验尸恰好一次，换回旧缓存，服务在跑"
+  else
+    ng "起不来（${how}）：期望退 1、验尸输出恰好 1 次、缓存换回（退出 ${CODE}，验尸 ${n} 次）" "$(events)"
+  fi
+done
 
 #-- AC6 缓存路径以配置为准：自定义绝对路径 ------------------------------
 setup

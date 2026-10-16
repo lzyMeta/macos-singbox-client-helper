@@ -17,6 +17,8 @@
 #                               模式也跟着回到默认（模式存在 cache.db 里）
 #   SB_FAKE_NOCACHE_FAIL=1      无缓存启动时有规则集下不来：FATAL 退出，进程不出现。
 #                               bootstrap 本身照样返回 0，和真 launchd 一样
+#   SB_FAKE_NOCACHE_LOADFAIL=1  无缓存时 bootstrap 本身就失败（Bootstrap failed: 5），
+#                               走的是 cmd_start「加载失败」那一支而不是「进程未出现」
 #
 S="${SB_FAKE_STATE:?SB_FAKE_STATE 未设置}"
 
@@ -78,6 +80,10 @@ case "${1:-}" in
         echo "cache:present" >> "$S/btm_events"
       else
         echo "cache:absent" >> "$S/btm_events"
+        if [ "${SB_FAKE_NOCACHE_LOADFAIL:-}" = 1 ]; then
+          echo "Bootstrap failed: 5: Input/output error" >&2
+          echo 0 > "$S/loaded"; _stop; exit 5
+        fi
         [ "${SB_FAKE_NOCACHE_FAIL:-}" = 1 ] && { _stop; exit 0; }
         printf 'fresh-cache' > "$SB_FAKE_CACHE_DB"
         rm -f "$S/clash_mode"
