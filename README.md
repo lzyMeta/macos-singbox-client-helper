@@ -157,6 +157,7 @@ cp config/config.example.json config.json && $EDITOR config.json   # 换掉 7 �
 | [docs/config-audit-migration-table.md](docs/config-audit-migration-table.md) | `config audit` 第二轮：四路发现层、迁移表、三条改写规则 |
 | [docs/config-audit-findings-guide.md](docs/config-audit-findings-guide.md) | `config audit` 第三轮（规格）：每条「怎么办」的解读文档、`--deep` 撤条说明 |
 | [docs/config-export.md](docs/config-export.md) | `config export`（规格）：把生效配置导出到自定义路径，防覆盖、0600、进程陈旧性警告 |
+| [docs/rules-update.md](docs/rules-update.md) | `rules update`（规格，待实现）：强制重下全部 remote 规则集，预检、旧缓存留作 `.prev`、起不来就回滚 |
 
 ---
 
@@ -208,7 +209,8 @@ cp config/config.example.json config.json && $EDITOR config.json   # 换掉 7 �
     │                          设计记录：config audit 第二轮（迁移表）
     ├── config-audit-findings-guide.md
     │                          规格：config audit 第三轮（结论解读文档）
-    └── config-export.md       规格：config export 导出生效配置
+    ├── config-export.md       规格：config export 导出生效配置
+    └── rules-update.md        规格：rules update 强制重下规则集（待实现）
 ```
 
 `.gitignore` 已排除 `config.json`、`*.bak`、`ui/`、`cache.db` 等本地产物——**填好参数的配置不要提交**。
