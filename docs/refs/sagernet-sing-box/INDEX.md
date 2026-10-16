@@ -7,6 +7,7 @@
 | [[0a2361c7]] | code | Route registration for all Clash API endpoints | — |
 | [[1d9dd509]] | code | Sing-Box DNS Rules: Secure but Slower (JSON) | — |
 | [[20f17d6f]] | info | rule-set > Local or Remote Fields | — |
+| [[2491ff1b]] | code | Clash API JSON structure | — |
 | [[2b290c7a]] | info | TCP > Structure | — |
 | [[2e885d56]] | code | Empty direct outbound validation logic | E.New |
 | [[30b35cff]] | code | HTTP Outbound Configuration Structure (JSON) | — |
@@ -16,10 +17,13 @@
 | [[3dfad514]] | info | rule-set > Remote Fields | — |
 | [[4f4d77a8]] | info | DNS > rule > ip_version | — |
 | [[5033cacc]] | code | Legacy DNS server detour field removed | — |
+| [[5423a11d]] | code | Basic traffic bypass configuration for Chinese users | — |
+| [[6067da17]] | info | Clash API > Fields > external_controller | — |
 | [[673fdf6d]] | code | RemoteRuleSet struct with subscription URL and outbound reference fields | — |
 | [[6fa69827]] | code | Resolve Action Configuration | — |
 | [[7011fa9e]] | info | DNS > rule > query_type | — |
 | [[7346e361]] | code | Migrate DNS Outbound to Hijack-DNS Action | — |
+| [[75065ba4]] | info | Clash API > Fields > default_mode | — |
 | [[7a95d80d]] | info | Deprecated Feature List > 1.14.0 > Legacy Address Filter Fields in DNS rules | — |
 | [[7c417bde]] | info | sing-box API > Fields > dashboard > update_interval | — |
 | [[98cfde08]] | info | Legacy Address Filter Fields > ip_is_private | — |
@@ -29,6 +33,7 @@
 | [[af37b6c8]] | info | rule-set | — |
 | [[b1b9f73b]] | code | Remote rule_set downloading occurs at start, not during check | E.Cause, RemoteRuleSet.StartContext |
 | [[bb589bcf]] | code | Remote rule-set structure | — |
+| [[c0d5929b]] | code | Experimental, Cache File, Clash API option definitions | CacheFileOptions.StoreFakeIP, ClashAPIOptions.ExternalController |
 | [[cc33ceae]] | code | New DNS rule configuration with match_response | — |
 | [[cdd599eb]] | info | Legacy Address Filter Fields > ip_cidr | — |
 | [[d0acb0ee]] | info | ip_version and query_type behavior changes in DNS rules | — |

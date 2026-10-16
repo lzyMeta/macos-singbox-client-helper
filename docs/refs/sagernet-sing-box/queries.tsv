@@ -28,6 +28,12 @@ aa88ce48	b1b9f73b
 aa88ce48	e7c05f09
 aa88ce48	f6b083df
 aa88ce48	meta	remote rule-set update_interval cache_file behavior: when is a remote rule set downloaded and updated	2026-10-16
+d0a94305	2491ff1b
+d0a94305	5423a11d
+d0a94305	6067da17
+d0a94305	75065ba4
+d0a94305	c0d5929b
+d0a94305	meta	clash_api external_controller secret default_mode and Clash API PATCH /configs mode	2026-10-16
 ddccee2a	1d9dd509
 ddccee2a	20f17d6f
 ddccee2a	7c417bde
