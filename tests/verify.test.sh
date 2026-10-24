@@ -66,8 +66,11 @@ JSON
   # 同理钉死 UDP 对照端点。SB_FAKE_QUIC=blocked 之后会走到 _sb_udp_alive，
   # 不钉的话这里同样会真的发包出去，离线跑测试就变成假红。
   export SB_FAKE_UDP=alive
+  # 系统 DNS 默认钉在代理模式。假 networksetup 不设时报 192.168.1.1（内网），
+  # 那样第 3 步的按服务检查每条用例都会多出一个策略档失败。
+  export SB_FAKE_DNS=1.1.1.1
 
-  unset SB_FAKE_VERIFY_FAIL SB_FAKE_DIG_FAIL SB_FAKE_DIG_IP SB_FAKE_HOST_FAIL \
+  unset SB_FAKE_DNS_MAP SB_FAKE_SERVICES SB_FAKE_VERIFY_FAIL SB_FAKE_DIG_FAIL SB_FAKE_DIG_IP SB_FAKE_HOST_FAIL \
         SB_FAKE_HOST_IP SB_FAKE_DSCACHEUTIL_FAIL SB_FAKE_DSCACHEUTIL_IP \
         SB_FAKE_PY_RESOLVE_FAIL SB_FAKE_CN_IP SB_FAKE_CN_FAIL SB_FAKE_NO_GW \
         SB_FAKE_PING_FAIL SB_FAKE_IPINFO_FAIL SB_FAKE_IPINFO_JUNK SB_FAKE_PROBE_FAIL \
@@ -276,6 +279,18 @@ if [ "$CODE" = 2 ] && [ "$n" = 3 ]; then
   ok "ipinfo.io 回非 JSON：退出 2，且确实试满了 3 次"
 else
   ng "ipinfo.io 回非 JSON：期望退出 2 且请求 3 次（实际 ${CODE} / ${n} 次）"
+fi
+
+#-- 14. 有网络服务的系统 DNS 是内网 / 未设：策略档 -------------------------
+# stop 还原 DNS 之后再 start，可能留下「iPhone USB 是 1.1.1.1、Wi-Fi 是 DHCP 下发」的形状
+# （见 tests/dns.test.sh）。解析结果碰巧没被污染时第 3 步照样报「解析正常」——
+# 只看解析结果抓不到，得按服务看一遍配置。DNS 配错不是内核问题，记策略档。
+setup
+SB_FAKE_SERVICES=$'Wi-Fi\niPhone USB' SB_FAKE_DNS_MAP=$'Wi-Fi=none\niPhone USB=1.1.1.1' sb
+if [ "$CODE" = 2 ] && grep 'Wi-Fi' "$LOG" | grep -q 'sysprep' && ! grep 'iPhone USB' "$LOG" | grep -q 'sysprep'; then
+  ok "Wi-Fi 的 DNS 未设：退出 2，点名 Wi-Fi 并提示 sysprep，不冤枉 iPhone USB"
+else
+  ng "Wi-Fi 的 DNS 未设：期望退出 2、点名 Wi-Fi 并提示 sysprep（实际 ${CODE}）"
 fi
 
 echo

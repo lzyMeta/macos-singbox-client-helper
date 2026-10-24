@@ -183,6 +183,7 @@ cp config/config.example.json config.json && $EDITOR config.json   # 换掉 7 �
 │   ├── logs.test.sh           日志体积可见性与原地截断
 │   ├── platform.test.sh       平台与 CPU 架构判定（Rosetta）
 │   ├── verify.test.sh         verify 的两档退出码
+│   ├── dns.test.sh            start / stop / restart 按网络服务处理系统 DNS
 │   ├── config-audit.test.sh   config audit 的发现层、迁移表与 --apply
 │   ├── config-export.test.sh  config export 的防覆盖、0600 与进程陈旧性警告
 │   ├── doctor.test.sh         doctor / status 对 TUN 路由的判读

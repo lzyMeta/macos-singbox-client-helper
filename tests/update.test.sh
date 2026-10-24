@@ -136,6 +136,10 @@ JSON
   # 同理钉死 UDP 对照组：QUIC=blocked 之后 verify 第 4 步会走到 _sb_udp_alive，
   # 不钉的话这里照样会往公网发 UDP，离线跑测试就是假红。
   export SB_FAKE_UDP=alive
+  # 系统 DNS 也钉在代理模式。假 networksetup 默认报 192.168.1.1（内网），verify 第 3 步的
+  # 按服务检查会对它记一个策略档失败——阶段 3 每条用例都变成「策略档放行」，
+  # 第 13 条拿「日志里有策略档」当判据就恒真了。
+  export SB_FAKE_DNS=1.1.1.1
 
   unset SB_FAKE_BAD_SHA SB_FAKE_NO_DIGEST SB_FAKE_BTM_PIN SB_FAKE_LAUNCHD_REASON SB_DIAGDIR
   unset SB_FAKE_CHECK_FAIL SB_FAKE_RUN_FAIL SB_FAKE_START_FAIL \

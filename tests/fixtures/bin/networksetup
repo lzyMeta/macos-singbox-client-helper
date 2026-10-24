@@ -4,6 +4,9 @@
 #
 #   SB_FAKE_SERVICES=<换行分隔>   服务列表，默认单个 "Wi-Fi"
 #   SB_FAKE_DNS=<地址>            -getdnsservers 报告的地址，默认 192.168.1.1（内网，会触发提示）
+#   SB_FAKE_DNS_MAP=<换行分隔>    按服务给地址，每行「服务名=地址」，查不到的服务回退 SB_FAKE_DNS。
+#                                 地址写 none 表示未设（DHCP 下发），吐真机那句 There aren't any…
+#                                 —— 「一个服务内网、另一个已是代理 DNS」这种混合形状只能靠它造
 #
 # 设了 SB_FAKE_STATE 时，-setdnsservers 记进 $SB_FAKE_STATE/dns_events，
 # 「这一步不该动 DNS」才有东西可断言。
@@ -16,7 +19,9 @@ case "${1:-}" in
     echo "IP address: 192.168.1.20"
     echo "IPv6: ${SB_FAKE_IPV6:-Automatic}" ;;
   -getdnsservers)
-    printf '%s\n' "${SB_FAKE_DNS:-192.168.1.1}" ;;
+    d=$(printf '%s\n' "${SB_FAKE_DNS_MAP:-}" | awk -v s="${2:-}" 'index($0, s "=") == 1 { print substr($0, length(s) + 2); exit }')
+    [ -n "$d" ] || d="${SB_FAKE_DNS:-192.168.1.1}"
+    if [ "$d" = none ]; then echo "There aren't any DNS Servers set on ${2:-}."; else printf '%s\n' "$d"; fi ;;
   -setdnsservers)
     [ -n "${SB_FAKE_STATE:-}" ] && echo "setdns:$*" >> "$SB_FAKE_STATE/dns_events"
     exit 0 ;;

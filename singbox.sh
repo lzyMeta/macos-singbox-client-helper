@@ -722,6 +722,18 @@ dns_restore() {
       restored=1
     done < "$DNS_BACKUP"
   fi
+  if [ "$restored" = 1 ]; then
+    # 备份是 install 时记的一次性快照，之后才出现的服务（插上的 iPhone USB、新建的
+    # 网络服务）不在里面。不补这一轮，它们就一直停在 $PROXY_DNS——代理已停，明文出网。
+    # 只动确实指向 $PROXY_DNS 的那些：用户之后自己给它设的地址不归这里还原。
+    while IFS= read -r svc; do
+      [ -n "$svc" ] || continue
+      cut -f1 "$DNS_BACKUP" | grep -qxF -- "$svc" && continue
+      [ "$(networksetup -getdnsservers "$svc" 2>/dev/null | tr -d ' \n')" = "$PROXY_DNS" ] || continue
+      run "sudo networksetup -setdnsservers \"$svc\" empty 2>/dev/null || true"
+      info "  $svc → 路由器下发（DHCP；备份里没有这个服务）"
+    done <<< "$(network_services)"
+  fi
   if [ "$restored" = 0 ]; then
     while IFS= read -r svc; do
       [ -n "$svc" ] || continue
@@ -749,7 +761,9 @@ _dns_show_current() {
   return 0
 }
 
-# 当前是否处于"代理用的 DNS"状态
+# 是否**有任一**服务指向代理用的 DNS。这是「停服后有没有东西要还原」的判据
+# （_maybe_restore_dns / uninstall / dns status），**不能**拿来判「起服后够不够」：
+# 一个服务是 1.1.1.1、另一个是 DHCP 下发的内网地址时它照样为真——那要看 dns_leaky_services。
 dns_is_proxy_mode() {
   local svc d
   while IFS= read -r svc; do
@@ -783,6 +797,32 @@ is_private_dns() {
     192.168.*|10.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|*"aren't any"*|"") return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# 系统 DNS 是内网地址或未设的网络服务，一行一个。判据与 syscheck / sysprep 是同一把尺子。
+# 代理在跑时这些服务的查询不进 TUN、明文出网——按服务逐个看，任一服务漏了就是漏了。
+dns_leaky_services() {
+  local svc d
+  while IFS= read -r svc; do
+    [ -n "$svc" ] || continue
+    d=$(networksetup -getdnsservers "$svc" 2>/dev/null | tr '\n' ' ')
+    is_private_dns "$d" && printf '%s\n' "$svc"
+  done <<< "$(network_services)"
+  return 0
+}
+
+# 服务起来之后（start / restart）把漏掉的服务设回代理用的 DNS。
+# 2026-10-23 真机：stop 还原了 Wi-Fi，备份之外的 iPhone USB 还停在 1.1.1.1，
+# 旧判据「任一服务 = 1.1.1.1」于是认定已在代理模式，start 一声不吭，Wi-Fi 一直漏。
+_dns_ensure_proxy() {
+  local leaky; leaky=$(dns_leaky_services)
+  [ -n "$leaky" ] || return 0
+  warn "这些网络服务的系统 DNS 是内网地址或未设 —— 查询可能不进 TUN 而被明文投毒："
+  printf '%s\n' "$leaky" | sed 's/^/        /' >&2
+  if ask "把 DNS 设为 ${PROXY_DNS}？" y; then
+    [ -f "$DNS_BACKUP" ] || dns_backup_save
+    dns_apply_proxy; ok "已设置"
+  fi
 }
 
 
@@ -1783,6 +1823,17 @@ except Exception: print("")' 2>/dev/null)
   else
     vpbad "dig / host / dscacheutil / python3 四级都拿不到 A 记录 —— 本机没有可用解析手段"
     info "解析结果没有可疑之处可言 —— 是解析这件事本身做不了；先确认能上网，再看 syscheck"
+  fi
+  # 解析结果碰巧没被污染时上面照样报「解析正常」——系统 DNS 漏没漏得按服务看配置。
+  # 计策略档：系统层配置不是内核问题，回滚换不回来。
+  local leaky svc
+  leaky=$(dns_leaky_services)
+  if [ -n "$leaky" ]; then
+    while IFS= read -r svc; do
+      vpbad "${svc} 的系统 DNS 是内网地址或未设 —— 查询可能不进 TUN；跑 $(basename "$0") sysprep"
+    done <<< "$leaky"
+  else
+    ok "各网络服务的系统 DNS 都不是内网地址"
   fi
   dim "浏览器验证：dnsleaktest.com 的 Extended Test 不应出现本地运营商"
 
@@ -3700,13 +3751,7 @@ cmd_start() {
     if running; then
       ok "已启动"
       # 之前停服时还原过 DNS 的话，这里要设回去，否则查询不进 TUN 会被投毒
-      if ! dns_is_proxy_mode; then
-        warn "系统 DNS 不在代理模式 —— 查询可能不进 TUN 而被明文投毒"
-        if ask "把 DNS 设为 ${PROXY_DNS}？" y; then
-          [ -f "$DNS_BACKUP" ] || dns_backup_save
-          dns_apply_proxy; ok "已设置"
-        fi
-      fi
+      _dns_ensure_proxy
     else
       bad "启动后进程未出现"; _launchd_postmortem; return 1
     fi
@@ -3838,7 +3883,11 @@ cmd_restart() {
   if daemon_loaded; then
     if sudo launchctl kickstart -k "$LABEL" 2>/dev/null; then
       sleep 3
-      running && ok "已重启" || { bad "重启后未运行"; _launchd_postmortem; return 1; }
+      running || { bad "重启后未运行"; _launchd_postmortem; return 1; }
+      ok "已重启"
+      # kickstart 不经过 cmd_start，DNS 那一查得自己做：换网络、插网卡之后的新服务
+      # 是内网 DNS 的话，重启一次就该被补上，而不是等 syscheck 才发现
+      _dns_ensure_proxy
     else
       warn "kickstart 失败，改为重新加载"
       # --keep-dns：这是一次「重启」，不是「停服」。不加的话 cmd_stop 会走到
