@@ -19,6 +19,8 @@
 #                               bootstrap 本身照样返回 0，和真 launchd 一样
 #   SB_FAKE_NOCACHE_LOADFAIL=1  无缓存时 bootstrap 本身就失败（Bootstrap failed: 5），
 #                               走的是 cmd_start「加载失败」那一支而不是「进程未出现」
+#   SB_FAKE_KICKSTART_FAIL=1    kickstart 本身退非 0（进程不动）。cmd_restart 据此改走
+#                               stop --keep-dns + cmd_start；不设这个，那一支没有用例能走到
 #
 S="${SB_FAKE_STATE:?SB_FAKE_STATE 未设置}"
 
@@ -66,6 +68,10 @@ case "${1:-}" in
     [ "$(cat "$S/loaded" 2>/dev/null || echo 1)" = 0 ] && exit 1
     exit 0 ;;
   kickstart)
+    if [ "${SB_FAKE_KICKSTART_FAIL:-}" = 1 ]; then
+      echo "kickstart:failed" >> "$S/btm_events"
+      exit 1
+    fi
     if [ "${SB_FAKE_BTM_PIN:-0}" = 1 ] && [ "$(_live_sig)" != "$(_pinned)" ]; then
       echo "kickstart:constraint-violation:$(_live_version)" >> "$S/btm_events"
       _stop; echo 0 > "$S/loaded"; exit 0

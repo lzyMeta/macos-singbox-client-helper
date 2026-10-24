@@ -148,6 +148,21 @@ else
   ng "restart（kickstart）：期望退 0 且没有任何 setdns（退出 ${CODE}）" "$(dns_events)"
 fi
 
+#-- 7b. restart（kickstart 失败 → stop --keep-dns + start）：同样要把内网那个服务设回去 -----
+# --keep-dns 这一半也要守：stop 那一步一下都不许把 iPhone USB 交回 DHCP
+setup
+echo 1 > "$SB_FAKE_STATE/running"
+export SB_FAKE_DNS_MAP=$'Wi-Fi=none\niPhone USB=1.1.1.1'
+SB_FAKE_KICKSTART_FAIL=1 sb restart
+if [ "$CODE" = 0 ] && grep -q '^kickstart:failed' "$SB_FAKE_STATE/btm_events" \
+   && grep -q '^bootout' "$SB_FAKE_STATE/btm_events" && grep -q '^bootstrap' "$SB_FAKE_STATE/btm_events" \
+   && set_to Wi-Fi 1.1.1.1 && ! grep -q ' empty$' "$SB_FAKE_STATE/dns_events"; then
+  ok "restart（kickstart 失败）：改走 bootout + bootstrap，Wi-Fi 被设为 1.1.1.1，没有交回 DHCP"
+else
+  ng "restart（kickstart 失败）：期望 kickstart:failed → bootout → bootstrap、Wi-Fi 被设为 1.1.1.1、无 empty（退出 ${CODE}）" \
+     "$(cat "$SB_FAKE_STATE/btm_events"; dns_events)"
+fi
+
 # dns status 的结论行。逐服务表格那几行以 6 个空格起头、带地址，漏掉的服务清单是 8 个空格、
 # 只有服务名——断言只认后者，表格里本来就有 Wi-Fi，拿它当证据是恒绿。
 listed() { grep -qxE "        $1" "$LOG"; }
