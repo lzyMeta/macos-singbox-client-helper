@@ -747,6 +747,8 @@ dns_restore() {
 }
 
 # 还原后回读实际生效值，避免"以为还原了其实没有"
+# _dns_show_current [nowarn] —— 「仍有服务指向 $PROXY_DNS」那句只对还原之后有意义；
+# dns status（自己下结论）与 dns proxy（刚设成它）传 nowarn，否则服务在跑时也叫人 dns dhcp
 _dns_show_current() {
   [ "$DRY" = 1 ] && return 0
   local svc d warned=0
@@ -757,7 +759,7 @@ _dns_show_current() {
     printf '      %-26s %s\n' "$svc" "$d"
     [ "$d" = "$PROXY_DNS" ] && warned=1
   done <<< "$(network_services)"
-  [ "$warned" = 1 ] && warn "仍有服务指向 $PROXY_DNS —— 用 dns dhcp 强制交回 DHCP"
+  [ "$warned" = 1 ] && [ "${1:-}" != nowarn ] && warn "仍有服务指向 $PROXY_DNS —— 用 dns dhcp 强制交回 DHCP"
   return 0
 }
 
@@ -4480,24 +4482,39 @@ cmd_dns() {
   case "${1:-status}" in
     status)
       step "系统 DNS 现状"
-      _dns_show_current
+      _dns_show_current nowarn
       echo
-      if dns_is_proxy_mode; then
-        info "状态：代理模式（指向 ${PROXY_DNS}）"
-        running && dim "服务在跑，这是正确状态" \
-                || warn "但服务没在跑 —— 明文查询会被污染，建议 dns dhcp"
+      # 服务在跑与没跑要问的是两件事，判据也不同：
+      #   在跑 → 有没有服务漏（逐个看，与 start / verify / syscheck 同一把尺子）。
+      #          以前看的是 dns_is_proxy_mode（任一服务 = PROXY_DNS），iPhone USB 是 1.1.1.1、
+      #          Wi-Fi 是 DHCP 下发时它报「代理模式，这是正确状态」——2026-10-23 真机形状
+      #   没跑 → 有没有服务还指向 PROXY_DNS（任一即算，那个服务的明文查询会被污染）
+      if running; then
+        local leaky; leaky=$(dns_leaky_services)
+        if [ -n "$leaky" ]; then
+          info "状态：服务在跑，但有网络服务的 DNS 是内网地址或未设"
+          warn "这些服务的查询可能不进 TUN 而被投毒，建议 dns proxy："
+          printf '%s\n' "$leaky" | sed 's/^/        /'
+        else
+          info "状态：服务在跑，各网络服务的 DNS 都不是内网地址"
+          dim "这是正确状态"
+        fi
+      elif dns_is_proxy_mode; then
+        info "状态：代理模式（有服务指向 ${PROXY_DNS}）"
+        warn "但服务没在跑 —— 明文查询会被污染，建议 dns dhcp"
       else
         info "状态：非代理模式"
-        running && warn "服务在跑但 DNS 不是 ${PROXY_DNS} —— 查询可能不进 TUN 被投毒，建议 dns proxy" \
-                || dim "服务未运行，这是正确状态"
+        dim "服务未运行，这是正确状态"
       fi
-      [ -f "$DNS_BACKUP" ] && { echo; info "备份（install 前记录）："; sed 's/^/      /;s/\t/ → /' "$DNS_BACKUP"; }
+      if [ -f "$DNS_BACKUP" ]; then
+        echo; info "备份（install 前记录）："; sed 's/^/      /;s/\t/ → /' "$DNS_BACKUP"
+      fi
       ;;
     dhcp)    need_root; step "交回 DHCP（路由器下发）"; dns_restore dhcp ;;
     backup)  need_root; step "按备份还原"; dns_restore backup ;;
     proxy)   need_root; step "设为代理模式"
              [ -f "$DNS_BACKUP" ] || dns_backup_save
-             dns_apply_proxy; ok "已设为 ${PROXY_DNS}"; _dns_show_current ;;
+             dns_apply_proxy; ok "已设为 ${PROXY_DNS}"; _dns_show_current nowarn ;;
     set)
       need_root
       local addr="${2:-}"

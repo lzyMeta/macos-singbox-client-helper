@@ -14,7 +14,7 @@
 `selfupdate`（`update` 阶段 S 的脚本自更新）、`update`（内核升级状态机与 `rollback`）、
 `rules`（`rules update` 的预检、换缓存、回滚与 clash 模式写回：假 `launchctl` 按 `SB_FAKE_CACHE_DB` 判有无缓存）、
 `logs`（日志体积与截断）、`platform`（架构判定）、`verify`（两档退出码）、
-`dns`（start / restart 按服务逐个判 DNS 漏没漏、stop 按备份还原时补上备份之外仍指向代理 DNS 的服务：
+`dns`（start / restart / `dns status` 按服务逐个判 DNS 漏没漏、stop 按备份还原时补上备份之外仍指向代理 DNS 的服务：
 假 `networksetup` 用 `SB_FAKE_DNS_MAP` 按服务给地址）、
 `config-audit`（四路发现层、迁移表、`--apply` 三条规则与四道验收）、
 `config-export`（防覆盖、0600、进程陈旧性 warn：假 `ps -o etime=` 桩在测试文件里自造）、

@@ -148,6 +148,45 @@ else
   ng "restart（kickstart）：期望退 0 且没有任何 setdns（退出 ${CODE}）" "$(dns_events)"
 fi
 
+# dns status 的结论行。逐服务表格那几行以 6 个空格起头、带地址，漏掉的服务清单是 8 个空格、
+# 只有服务名——断言只认后者，表格里本来就有 Wi-Fi，拿它当证据是恒绿。
+listed() { grep -qxE "        $1" "$LOG"; }
+
+#-- 8. dns status：服务在跑、一个服务是 1.1.1.1、Wi-Fi 未设 —— 不许说「正确状态」 --------
+setup
+echo 1 > "$SB_FAKE_STATE/running"
+export SB_FAKE_DNS_MAP=$'Wi-Fi=none\niPhone USB=1.1.1.1'
+sb dns status
+# 「仍有服务指向 1.1.1.1 —— 用 dns dhcp」是停服还原之后才该说的话，服务在跑时说它就是叫人去拆代理
+if [ "$CODE" = 0 ] && ! grep -q '正确状态' "$LOG" && grep -q 'dns proxy' "$LOG" && ! grep -q 'dns dhcp' "$LOG" \
+   && listed Wi-Fi && ! listed 'iPhone USB'; then
+  ok "dns status（在跑、混合）：点名 Wi-Fi、建议 dns proxy，不说「正确状态」也不建议 dns dhcp"
+else
+  ng "dns status（在跑、混合）：期望退 0、点名 Wi-Fi 并建议 dns proxy、不出现「正确状态」与 dns dhcp（退出 ${CODE}）"
+fi
+
+#-- 9. dns status：服务在跑、全部已是代理 DNS —— 正确状态，不建议改 ----------------------
+setup
+echo 1 > "$SB_FAKE_STATE/running"
+export SB_FAKE_DNS=1.1.1.1
+sb dns status
+if [ "$CODE" = 0 ] && grep -q '正确状态' "$LOG" && ! grep -q 'dns proxy' "$LOG" && ! grep -q 'dns dhcp' "$LOG"; then
+  ok "dns status（在跑、全部 1.1.1.1）：报正确状态，不建议改"
+else
+  ng "dns status（在跑、全部 1.1.1.1）：期望退 0、「正确状态」、不建议 dns proxy / dns dhcp（退出 ${CODE}）"
+fi
+
+#-- 10. dns status：服务没跑、还有服务指向 1.1.1.1 —— 照旧建议 dns dhcp ------------------
+# 三条都没写 dns-backup：status 以前在没有备份时退 1（末行 `[ -f … ] && {…}` 的返回值漏出去）
+setup
+export SB_FAKE_DNS_MAP=$'Wi-Fi=none\niPhone USB=1.1.1.1'
+sb dns status
+if [ "$CODE" = 0 ] && grep -q 'dns dhcp' "$LOG" && ! grep -q '正确状态' "$LOG"; then
+  ok "dns status（没跑、iPhone USB 仍是 1.1.1.1）：建议 dns dhcp"
+else
+  ng "dns status（没跑、混合）：期望建议 dns dhcp、不出现「正确状态」（退出 ${CODE}）"
+fi
+
 echo
 echo "通过 ${pass}，失败 ${fail}"
 [ "$fail" = 0 ]
